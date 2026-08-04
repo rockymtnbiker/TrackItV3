@@ -5,7 +5,8 @@ export const objectives: Objective[] = [
     id: 'objective-1',
     title: 'Run a Marathon',
     createdDate: '2026-01-15',
-    targetCompletionDate: '2026-11-01',
+    startDate: '2026-01-15',
+    endDate: '2026-11-01',
     affirmation: 'I am a marathon runner who trains with discipline every day',
   },
 ];
@@ -21,6 +22,7 @@ export const keyResults: KeyResult[] = [
     endDate: '2026-10-15',
     currentProgress: 142,
     status: 'in_progress',
+    createdDate: '2026-01-15',
   },
   {
     id: 'key-result-2',
@@ -32,6 +34,8 @@ export const keyResults: KeyResult[] = [
     endDate: '2026-11-01',
     currentProgress: 0,
     status: 'not_started',
+    // Created with the Objective; startDate is still in the future.
+    createdDate: '2026-01-15',
   },
 ];
 
@@ -42,12 +46,18 @@ export const dailyHabits: DailyHabit[] = [
     linkedGoalId: 'key-result-1',
     linkedGoalType: 'keyResult',
     streakCount: 12,
+    createdDate: '2026-07-01',
+    startDate: '2026-07-01',
+    endDate: '2026-10-15',
     completionLog: ['2026-07-05', '2026-07-06', '2026-07-07', '2026-07-08'],
   },
   {
     id: 'daily-habit-2',
     title: 'Stretch daily',
     streakCount: 5,
+    createdDate: '2026-07-13',
+    startDate: '2026-07-13',
+    endDate: '2026-11-01',
     completionLog: ['2026-07-13', '2026-07-14', '2026-07-15', '2026-07-16', '2026-07-17'],
   },
 ];
@@ -61,6 +71,9 @@ export const keyActivities: KeyActivity[] = [
     scheduledDays: ['monday', 'wednesday', 'saturday'],
     linkedGoalId: 'key-result-1',
     linkedGoalType: 'keyResult',
+    createdDate: '2026-07-01',
+    startDate: '2026-07-01',
+    endDate: '2026-10-15',
     completionLog: ['2026-07-15', '2026-07-16'],
   },
 ];

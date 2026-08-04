@@ -8,10 +8,13 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppData } from '../context/AppDataContext';
 import {
+  completionsInActiveRange,
   dashboardTrackableActivities,
   dashboardTrackableHabits,
+  existsByDate,
   filterActive,
 } from '../utils/activeItems';
+import { todayDateString } from '../utils/date';
 import {
   DAILY_HABIT_WEEKLY_TARGET,
   monthlyProgressLabel,
@@ -66,41 +69,54 @@ function ProgressRow({
 
 export default function DashboardScreen() {
   const { objectives, keyResults, dailyHabits, keyActivities } = useAppData();
+  const today = todayDateString();
 
   const activeObjectives = useMemo(
-    () => filterActive(objectives),
-    [objectives],
+    () => filterActive(objectives).filter((item) => existsByDate(item, today)),
+    [objectives, today],
   );
   const activeKeyResults = useMemo(
-    () => filterActive(keyResults),
-    [keyResults],
+    () => filterActive(keyResults).filter((item) => existsByDate(item, today)),
+    [keyResults, today],
   );
 
   const trackableItems = useMemo<TrackableItem[]>(() => {
-    const habits: TrackableItem[] = dashboardTrackableHabits(dailyHabits).map(
-      (habit) => ({
-        id: habit.id,
-        title: habit.title,
-        type: 'dailyHabit',
-        completionLog: habit.completionLog,
-        weeklyTarget: DAILY_HABIT_WEEKLY_TARGET,
-        isArchived: Boolean(habit.deletedAt),
-      }),
-    );
+    const habits: TrackableItem[] = dashboardTrackableHabits(
+      dailyHabits,
+      today,
+    ).map((habit) => ({
+      id: habit.id,
+      title: habit.title,
+      type: 'dailyHabit',
+      completionLog: completionsInActiveRange(
+        habit.completionLog,
+        habit.createdDate,
+        habit.startDate,
+        habit.endDate,
+      ),
+      weeklyTarget: DAILY_HABIT_WEEKLY_TARGET,
+      isArchived: Boolean(habit.deletedAt),
+    }));
 
     const activities: TrackableItem[] = dashboardTrackableActivities(
       keyActivities,
+      today,
     ).map((activity) => ({
       id: activity.id,
       title: activity.title,
       type: 'keyActivity',
-      completionLog: activity.completionLog,
+      completionLog: completionsInActiveRange(
+        activity.completionLog,
+        activity.createdDate,
+        activity.startDate,
+        activity.endDate,
+      ),
       weeklyTarget: activity.weeklyTarget,
       isArchived: Boolean(activity.deletedAt),
     }));
 
     return [...habits, ...activities];
-  }, [dailyHabits, keyActivities]);
+  }, [dailyHabits, keyActivities, today]);
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>

@@ -4,9 +4,42 @@ import type {
   KeyResult,
   Objective,
 } from '../types';
+import { existsOnDate, todayDateString } from './date';
 
 export function isActive<T extends { deletedAt?: string }>(item: T): boolean {
   return item.deletedAt == null;
+}
+
+export function existsByDate<T extends { createdDate: string }>(
+  item: T,
+  dateString: string = todayDateString(),
+): boolean {
+  return existsOnDate(item.createdDate, dateString);
+}
+
+/**
+ * Completions that count for active progress:
+ * on/after createdDate and within [startDate, endDate].
+ * Raw log entries outside the range are preserved but excluded here.
+ */
+export function completionsInActiveRange(
+  completionLog: string[],
+  createdDate: string,
+  startDate: string,
+  endDate: string,
+): string[] {
+  return completionLog.filter(
+    (date) =>
+      date >= createdDate && date >= startDate && date <= endDate,
+  );
+}
+
+/** @deprecated Prefer completionsInActiveRange */
+export function completionsSinceCreated(
+  completionLog: string[],
+  createdDate: string,
+): string[] {
+  return completionLog.filter((date) => date >= createdDate);
 }
 
 export function filterActive<T extends { deletedAt?: string }>(
@@ -21,18 +54,29 @@ export function hasHistoricalData(
   return item.completionLog.length > 0;
 }
 
-/** Dashboard trackable items: active, or soft-deleted with completion history. */
+/**
+ * Dashboard trackable items: active (and already created by referenceDate),
+ * or soft-deleted with completion history that can still count historically.
+ */
 export function dashboardTrackableHabits(
   habits: DailyHabit[],
+  referenceDate: string = todayDateString(),
 ): DailyHabit[] {
-  return habits.filter((habit) => isActive(habit) || hasHistoricalData(habit));
+  return habits.filter(
+    (habit) =>
+      (isActive(habit) && existsByDate(habit, referenceDate)) ||
+      (!isActive(habit) && hasHistoricalData(habit)),
+  );
 }
 
 export function dashboardTrackableActivities(
   activities: KeyActivity[],
+  referenceDate: string = todayDateString(),
 ): KeyActivity[] {
   return activities.filter(
-    (activity) => isActive(activity) || hasHistoricalData(activity),
+    (activity) =>
+      (isActive(activity) && existsByDate(activity, referenceDate)) ||
+      (!isActive(activity) && hasHistoricalData(activity)),
   );
 }
 

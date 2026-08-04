@@ -1,5 +1,5 @@
 import type { DailyHabit, KeyActivity } from '../types';
-import { isFutureDate, isScheduledOnDate } from './date';
+import { isFutureDate, isItemActiveOnDate, isScheduledOnDate } from './date';
 import { calculateStreak } from './streak';
 
 export type ChecklistItem = {
@@ -89,6 +89,10 @@ export function buildChecklistSections(
   const sectionMap = new Map<string, ChecklistItem[]>();
 
   for (const habit of dailyHabits) {
+    if (!isItemActiveOnDate(habit, selectedDate)) {
+      continue;
+    }
+
     const sectionKey = getSectionKey(habit.linkedGoalId, habit.linkedGoalType);
     const items = sectionMap.get(sectionKey) ?? [];
     items.push({
@@ -105,6 +109,10 @@ export function buildChecklistSections(
   }
 
   for (const activity of keyActivities) {
+    if (!isItemActiveOnDate(activity, selectedDate)) {
+      continue;
+    }
+
     if (!isScheduledOnDate(activity.scheduledDays, selectedDate)) {
       continue;
     }

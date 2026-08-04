@@ -15,7 +15,8 @@ export interface Objective {
   id: string;
   title: string;
   createdDate: string;
-  targetCompletionDate: string;
+  startDate: string;
+  endDate: string;
   affirmation?: string;
   deletedAt?: string;
 }
@@ -30,6 +31,7 @@ export interface KeyResult {
   endDate: string;
   currentProgress: number;
   status: KeyResultStatus;
+  createdDate: string;
   deletedAt?: string;
 }
 
@@ -43,6 +45,9 @@ export interface KeyActivity {
   linkedGoalId?: string;
   linkedGoalType?: LinkedGoalType;
   completionLog: string[];
+  createdDate: string;
+  startDate: string;
+  endDate: string;
   deletedAt?: string;
 }
 
@@ -53,6 +58,9 @@ export interface DailyHabit {
   linkedGoalType?: LinkedGoalType;
   completionLog: string[];
   streakCount: number;
+  createdDate: string;
+  startDate: string;
+  endDate: string;
   deletedAt?: string;
 }
 

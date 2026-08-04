@@ -54,6 +54,29 @@ export function isPastDate(
   return dateString < referenceToday;
 }
 
+/** True when the item already existed on the given date (inclusive). */
+export function existsOnDate(
+  createdDate: string,
+  dateString: string,
+): boolean {
+  return dateString >= createdDate;
+}
+
+/**
+ * True when the item is active on dateString:
+ * created already, and within its startDate–endDate range.
+ */
+export function isItemActiveOnDate(
+  item: { createdDate: string; startDate: string; endDate: string },
+  dateString: string,
+): boolean {
+  return (
+    dateString >= item.createdDate &&
+    dateString >= item.startDate &&
+    dateString <= item.endDate
+  );
+}
+
 export type WeekDayCell = {
   dateString: string;
   weekday: Weekday;

@@ -41,11 +41,16 @@ import {
   WEEKDAY_SHORT_LABELS,
   WEEKDAYS,
 } from '../utils/date';
+import {
+  detectDateRangeConflicts,
+  formatDateRangeConflictMessage,
+} from '../utils/dateRange';
 import { calculateStreak } from '../utils/streak';
 import {
   createId,
   getFormTitle,
   populateFormFromItem,
+  type DateConflictPrompt,
   type DeletePrompt,
   type FormMode,
   type ItemLinkContext,
@@ -355,6 +360,8 @@ export default function GoalsScreen() {
   const [formMode, setFormMode] = useState<FormMode | null>(null);
   const [deletePrompt, setDeletePrompt] = useState<DeletePrompt | null>(null);
   const [movePrompt, setMovePrompt] = useState<MovePrompt | null>(null);
+  const [dateConflictPrompt, setDateConflictPrompt] =
+    useState<DateConflictPrompt | null>(null);
   const [keyResultKeepChoice, setKeyResultKeepChoice] =
     useState<KeyResultKeepChoice>('standalone');
   const [reassignObjectiveId, setReassignObjectiveId] = useState<string | null>(
@@ -362,7 +369,6 @@ export default function GoalsScreen() {
   );
 
   const [title, setTitle] = useState('');
-  const [targetCompletionDate, setTargetCompletionDate] = useState('');
   const [affirmation, setAffirmation] = useState('');
   const [targetNumber, setTargetNumber] = useState('');
   const [unit, setUnit] = useState('');
@@ -373,7 +379,6 @@ export default function GoalsScreen() {
 
   const resetForm = () => {
     setTitle('');
-    setTargetCompletionDate('');
     setAffirmation('');
     setTargetNumber('');
     setUnit('');
@@ -385,12 +390,14 @@ export default function GoalsScreen() {
 
   const closeForm = () => {
     setFormMode(null);
+    setDateConflictPrompt(null);
     resetForm();
   };
 
   const openCreateForm = (mode: FormMode) => {
     resetForm();
     setFormMode(mode);
+    setStartDate(todayDateString());
     if (
       mode.action === 'create' &&
       (mode.type === 'dailyHabit' || mode.type === 'keyActivity') &&
@@ -410,7 +417,6 @@ export default function GoalsScreen() {
     );
     setFormMode(mode);
     setTitle(values.title);
-    setTargetCompletionDate(values.targetCompletionDate);
     setAffirmation(values.affirmation);
     setTargetNumber(values.targetNumber);
     setUnit(values.unit);
@@ -441,13 +447,16 @@ export default function GoalsScreen() {
     );
   };
 
-  const handleSave = () => {
+  const applySave = () => {
     if (!formMode || !title.trim()) {
       return;
     }
 
+    const trimmedStart = startDate.trim();
+    const trimmedEnd = endDate.trim();
+
     if (formMode.type === 'objective') {
-      if (!targetCompletionDate.trim()) {
+      if (!trimmedStart || !trimmedEnd) {
         return;
       }
 
@@ -457,7 +466,8 @@ export default function GoalsScreen() {
           id: createId('objective'),
           title: trimmedTitle,
           createdDate: todayDateString(),
-          targetCompletionDate: targetCompletionDate.trim(),
+          startDate: trimmedStart,
+          endDate: trimmedEnd,
           affirmation:
             affirmation.trim() || `I am achieving: ${trimmedTitle}`,
         };
@@ -471,7 +481,8 @@ export default function GoalsScreen() {
               ? {
                   ...objective,
                   title: trimmedTitle,
-                  targetCompletionDate: targetCompletionDate.trim(),
+                  startDate: trimmedStart,
+                  endDate: trimmedEnd,
                   affirmation:
                     affirmation.trim() || `I am achieving: ${trimmedTitle}`,
                 }
@@ -486,8 +497,8 @@ export default function GoalsScreen() {
       if (
         !Number.isFinite(parsedTarget) ||
         !unit.trim() ||
-        !startDate.trim() ||
-        !endDate.trim()
+        !trimmedStart ||
+        !trimmedEnd
       ) {
         return;
       }
@@ -499,10 +510,11 @@ export default function GoalsScreen() {
           title: title.trim(),
           targetNumber: parsedTarget,
           unit: unit.trim(),
-          startDate: startDate.trim(),
-          endDate: endDate.trim(),
+          startDate: trimmedStart,
+          endDate: trimmedEnd,
           currentProgress: 0,
           status: 'in_progress',
+          createdDate: todayDateString(),
         };
         setKeyResults((current) => [...current, newKeyResult]);
         setExpandedKeyResultId(newKeyResult.id);
@@ -515,8 +527,8 @@ export default function GoalsScreen() {
                   title: title.trim(),
                   targetNumber: parsedTarget,
                   unit: unit.trim(),
-                  startDate: startDate.trim(),
-                  endDate: endDate.trim(),
+                  startDate: trimmedStart,
+                  endDate: trimmedEnd,
                 }
               : keyResult,
           ),
@@ -525,32 +537,48 @@ export default function GoalsScreen() {
     }
 
     if (formMode.type === 'dailyHabit') {
+      if (!trimmedStart || !trimmedEnd) {
+        return;
+      }
+
       if (formMode.action === 'create') {
         const link = resolveItemLink(formMode.link, itemLinked);
+        const created = todayDateString();
         const newHabit: DailyHabit = {
           id: createId('daily-habit'),
           title: title.trim(),
           ...link,
           streakCount: 0,
           completionLog: [],
+          createdDate: created,
+          startDate: trimmedStart,
+          endDate: trimmedEnd,
         };
         setDailyHabits((current) => [...current, newHabit]);
       } else {
         setDailyHabits((current) =>
           current.map((habit) =>
-            habit.id === formMode.id ? { ...habit, title: title.trim() } : habit,
+            habit.id === formMode.id
+              ? {
+                  ...habit,
+                  title: title.trim(),
+                  startDate: trimmedStart,
+                  endDate: trimmedEnd,
+                }
+              : habit,
           ),
         );
       }
     }
 
     if (formMode.type === 'keyActivity') {
-      if (scheduledDays.length === 0) {
+      if (scheduledDays.length === 0 || !trimmedStart || !trimmedEnd) {
         return;
       }
 
       if (formMode.action === 'create') {
         const link = resolveItemLink(formMode.link, itemLinked);
+        const created = todayDateString();
         const newActivity: KeyActivity = {
           id: createId('key-activity'),
           title: title.trim(),
@@ -559,6 +587,9 @@ export default function GoalsScreen() {
           scheduledDays: [...scheduledDays],
           ...link,
           completionLog: [],
+          createdDate: created,
+          startDate: trimmedStart,
+          endDate: trimmedEnd,
         };
         setKeyActivities((current) => [...current, newActivity]);
       } else {
@@ -570,6 +601,8 @@ export default function GoalsScreen() {
                   title: title.trim(),
                   scheduledDays: [...scheduledDays],
                   weeklyTarget: scheduledDays.length,
+                  startDate: trimmedStart,
+                  endDate: trimmedEnd,
                 }
               : activity,
           ),
@@ -578,6 +611,69 @@ export default function GoalsScreen() {
     }
 
     closeForm();
+  };
+
+  const handleSave = () => {
+    if (!formMode || !title.trim()) {
+      return;
+    }
+
+    const trimmedStart = startDate.trim();
+    const trimmedEnd = endDate.trim();
+    if (!trimmedStart || !trimmedEnd) {
+      return;
+    }
+
+    if (
+      formMode.action === 'edit' &&
+      (formMode.type === 'dailyHabit' || formMode.type === 'keyActivity')
+    ) {
+      const existing =
+        formMode.type === 'dailyHabit'
+          ? dailyHabits.find((item) => item.id === formMode.id)
+          : keyActivities.find((item) => item.id === formMode.id);
+
+      if (existing) {
+        const conflicts = detectDateRangeConflicts(
+          existing.completionLog,
+          existing.startDate,
+          existing.endDate,
+          trimmedStart,
+          trimmedEnd,
+        );
+
+        if (conflicts.length > 0) {
+          setDateConflictPrompt({
+            message: `${formatDateRangeConflictMessage(conflicts)}\n\nContinue?`,
+            onConfirm: () => {
+              setDateConflictPrompt(null);
+              applySave();
+            },
+          });
+          return;
+        }
+      }
+    }
+
+    applySave();
+  };
+
+  const cancelDateConflict = () => {
+    if (!formMode || formMode.action !== 'edit') {
+      setDateConflictPrompt(null);
+      return;
+    }
+
+    const values = populateFormFromItem(
+      formMode,
+      objectives,
+      keyResults,
+      dailyHabits,
+      keyActivities,
+    );
+    setStartDate(values.startDate);
+    setEndDate(values.endDate);
+    setDateConflictPrompt(null);
   };
 
   const promptDeleteHabit = (habit: DailyHabit) => {
@@ -702,13 +798,12 @@ export default function GoalsScreen() {
 
   const canSubmit =
     title.trim().length > 0 &&
+    startDate.trim().length > 0 &&
+    endDate.trim().length > 0 &&
     (formMode?.type === 'objective'
-      ? targetCompletionDate.trim().length > 0
+      ? true
       : formMode?.type === 'keyResult'
-        ? Number.isFinite(Number(targetNumber)) &&
-          unit.trim().length > 0 &&
-          startDate.trim().length > 0 &&
-          endDate.trim().length > 0
+        ? Number.isFinite(Number(targetNumber)) && unit.trim().length > 0
         : formMode?.type === 'keyActivity'
           ? scheduledDays.length > 0
           : formMode?.type === 'dailyHabit');
@@ -874,9 +969,10 @@ export default function GoalsScreen() {
                   ]}
                 >
                   <Text style={styles.objectiveTitle}>{objective.title}</Text>
-                  <Text style={styles.objectiveDate}>
-                    Target: {formatDate(objective.targetCompletionDate)}
-                  </Text>
+                <Text style={styles.objectiveDate}>
+                  {formatDate(objective.startDate)} –{' '}
+                  {formatDate(objective.endDate)}
+                </Text>
                 </Pressable>
               </SwipeableRow>
 
@@ -1098,16 +1194,31 @@ export default function GoalsScreen() {
                 autoFocus
               />
 
-              {formMode?.type === 'objective' && (
+              {(formMode?.type === 'objective' ||
+                formMode?.type === 'keyResult' ||
+                formMode?.type === 'dailyHabit' ||
+                formMode?.type === 'keyActivity') && (
                 <>
-                  <Text style={styles.fieldLabel}>Target Completion Date</Text>
+                  <Text style={styles.fieldLabel}>Start Date</Text>
                   <TextInput
                     style={styles.input}
-                    value={targetCompletionDate}
-                    onChangeText={setTargetCompletionDate}
+                    value={startDate}
+                    onChangeText={setStartDate}
                     placeholder="YYYY-MM-DD"
                   />
 
+                  <Text style={styles.fieldLabel}>End Date</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={endDate}
+                    onChangeText={setEndDate}
+                    placeholder="YYYY-MM-DD"
+                  />
+                </>
+              )}
+
+              {formMode?.type === 'objective' && (
+                <>
                   <Text style={styles.fieldLabel}>Affirmation (optional)</Text>
                   <TextInput
                     style={styles.input}
@@ -1135,22 +1246,6 @@ export default function GoalsScreen() {
                     value={unit}
                     onChangeText={setUnit}
                     placeholder="e.g. goals, miles"
-                  />
-
-                  <Text style={styles.fieldLabel}>Start Date</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={startDate}
-                    onChangeText={setStartDate}
-                    placeholder="YYYY-MM-DD"
-                  />
-
-                  <Text style={styles.fieldLabel}>End Date</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={endDate}
-                    onChangeText={setEndDate}
-                    placeholder="YYYY-MM-DD"
                   />
                 </>
               )}
@@ -1467,6 +1562,34 @@ export default function GoalsScreen() {
                 style={styles.modalButtonSecondary}
               >
                 <Text style={styles.modalButtonSecondaryText}>Cancel</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={dateConflictPrompt !== null}
+        animationType="fade"
+        transparent
+        onRequestClose={cancelDateConflict}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Confirm date change</Text>
+            <Text style={styles.dialogBody}>{dateConflictPrompt?.message}</Text>
+            <View style={styles.modalActions}>
+              <Pressable
+                onPress={cancelDateConflict}
+                style={styles.modalButtonSecondary}
+              >
+                <Text style={styles.modalButtonSecondaryText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => dateConflictPrompt?.onConfirm()}
+                style={styles.modalButtonDanger}
+              >
+                <Text style={styles.modalButtonPrimaryText}>Continue</Text>
               </Pressable>
             </View>
           </View>

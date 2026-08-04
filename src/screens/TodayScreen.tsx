@@ -1,16 +1,23 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
+  FlatList,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
+  type ListRenderItemInfo,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from 'react-native';
 import { useAppData } from '../context/AppDataContext';
 import {
+  addDays,
   formatDate,
+  isItemActiveOnDate,
   getWeekDays,
+  getWeekStart,
   todayDateString,
   WEEKDAY_SHORT_LABELS,
   type WeekDayCell,
@@ -19,6 +26,71 @@ import {
   buildChecklistSections,
   type ChecklistItem,
 } from '../utils/todayChecklist';
+
+/** Weeks rendered on each side of the initially focused week. */
+const INITIAL_SIDE_WEEKS = 12;
+/** Extend the window when the user is this many pages from an edge. */
+const EXTEND_THRESHOLD = 4;
+/** How many weeks to append/prepend when extending. */
+const EXTEND_BATCH = 12;
+/** Max weeks kept in the window (trim the far side). */
+const MAX_WINDOW_WEEKS = 40;
+
+function buildWeekWindow(centerWeekStart: string, sideWeeks: number): string[] {
+  const weeks: string[] = [];
+  for (let offset = -sideWeeks; offset <= sideWeeks; offset += 1) {
+    weeks.push(addDays(centerWeekStart, offset * 7));
+  }
+  return weeks;
+}
+
+function prependWeeks(weekStarts: string[], count: number): string[] {
+  const first = weekStarts[0];
+  if (!first) {
+    return weekStarts;
+  }
+
+  const prepended: string[] = [];
+  for (let i = count; i >= 1; i -= 1) {
+    prepended.push(addDays(first, -i * 7));
+  }
+  return [...prepended, ...weekStarts];
+}
+
+function appendWeeks(weekStarts: string[], count: number): string[] {
+  const last = weekStarts[weekStarts.length - 1];
+  if (!last) {
+    return weekStarts;
+  }
+
+  const appended: string[] = [];
+  for (let i = 1; i <= count; i += 1) {
+    appended.push(addDays(last, i * 7));
+  }
+  return [...weekStarts, ...appended];
+}
+
+function trimWeekWindow(
+  weekStarts: string[],
+  focusedIndex: number,
+): { weeks: string[]; index: number } {
+  if (weekStarts.length <= MAX_WINDOW_WEEKS) {
+    return { weeks: weekStarts, index: focusedIndex };
+  }
+
+  const keepRadius = Math.floor(MAX_WINDOW_WEEKS / 2);
+  let start = Math.max(0, focusedIndex - keepRadius);
+  let end = start + MAX_WINDOW_WEEKS;
+  if (end > weekStarts.length) {
+    end = weekStarts.length;
+    start = Math.max(0, end - MAX_WINDOW_WEEKS);
+  }
+
+  return {
+    weeks: weekStarts.slice(start, end),
+    index: focusedIndex - start,
+  };
+}
 
 function StreakBadge({ streak }: { streak: number }) {
   if (streak < 3) {
@@ -33,19 +105,21 @@ function StreakBadge({ streak }: { streak: number }) {
   );
 }
 
-function WeekDateStrip({
+function WeekPage({
   days,
   today,
   selectedDate,
   onSelectDate,
+  width,
 }: {
   days: WeekDayCell[];
   today: string;
   selectedDate: string;
   onSelectDate: (dateString: string) => void;
+  width: number;
 }) {
   return (
-    <View style={styles.weekStrip}>
+    <View style={[styles.weekStrip, { width }]}>
       {days.map((day) => {
         const isToday = day.dateString === today;
         const isSelected = day.dateString === selectedDate;
@@ -83,6 +157,208 @@ function WeekDateStrip({
           </Pressable>
         );
       })}
+    </View>
+  );
+}
+
+function InfiniteWeekPager({
+  today,
+  selectedDate,
+  onSelectDate,
+  onVisibleWeekChange,
+  listRef,
+  weekStarts,
+  setWeekStarts,
+  pageIndex,
+  setPageIndex,
+}: {
+  today: string;
+  selectedDate: string;
+  onSelectDate: (dateString: string) => void;
+  onVisibleWeekChange: (weekStart: string) => void;
+  listRef: React.RefObject<FlatList<string> | null>;
+  weekStarts: string[];
+  setWeekStarts: React.Dispatch<React.SetStateAction<string[]>>;
+  pageIndex: number;
+  setPageIndex: React.Dispatch<React.SetStateAction<number>>;
+}) {
+  const [pageWidth, setPageWidth] = useState(0);
+  const isAdjustingRef = useRef(false);
+  const pageIndexRef = useRef(pageIndex);
+  const selectedDateRef = useRef(selectedDate);
+  const weekStartsRef = useRef(weekStarts);
+  pageIndexRef.current = pageIndex;
+  selectedDateRef.current = selectedDate;
+  weekStartsRef.current = weekStarts;
+
+  const scrollToIndexSafe = useCallback(
+    (index: number, animated: boolean) => {
+      requestAnimationFrame(() => {
+        listRef.current?.scrollToIndex({ index, animated });
+        requestAnimationFrame(() => {
+          isAdjustingRef.current = false;
+        });
+      });
+    },
+    [listRef],
+  );
+
+  const ensureWindowCapacity = useCallback(
+    (index: number) => {
+      const current = weekStartsRef.current;
+      let next = current;
+      let nextIndex = index;
+      let needsScrollAdjust = false;
+
+      if (index < EXTEND_THRESHOLD) {
+        next = prependWeeks(next, EXTEND_BATCH);
+        nextIndex = index + EXTEND_BATCH;
+        needsScrollAdjust = true;
+      } else if (index > current.length - 1 - EXTEND_THRESHOLD) {
+        next = appendWeeks(next, EXTEND_BATCH);
+      }
+
+      const trimmed = trimWeekWindow(next, nextIndex);
+      if (trimmed.index !== nextIndex) {
+        needsScrollAdjust = true;
+      }
+
+      const weeksChanged =
+        trimmed.weeks.length !== current.length ||
+        trimmed.weeks[0] !== current[0] ||
+        trimmed.weeks[trimmed.weeks.length - 1] !==
+          current[current.length - 1];
+
+      if (!weeksChanged && trimmed.index === index) {
+        return;
+      }
+
+      if (needsScrollAdjust) {
+        isAdjustingRef.current = true;
+      }
+
+      weekStartsRef.current = trimmed.weeks;
+      pageIndexRef.current = trimmed.index;
+      setWeekStarts(trimmed.weeks);
+      setPageIndex(trimmed.index);
+
+      if (needsScrollAdjust) {
+        scrollToIndexSafe(trimmed.index, false);
+      }
+    },
+    [scrollToIndexSafe, setPageIndex, setWeekStarts],
+  );
+
+  const handleWeekSettled = useCallback(
+    (index: number) => {
+      if (isAdjustingRef.current) {
+        return;
+      }
+
+      const weekStart = weekStartsRef.current[index];
+      if (!weekStart) {
+        return;
+      }
+
+      const currentSelected = selectedDateRef.current;
+      const selectedOffset = Math.max(
+        0,
+        Math.min(
+          6,
+          getWeekDays(getWeekStart(currentSelected)).findIndex(
+            (day) => day.dateString === currentSelected,
+          ),
+        ),
+      );
+
+      pageIndexRef.current = index;
+      setPageIndex(index);
+      onVisibleWeekChange(weekStart);
+      onSelectDate(addDays(weekStart, selectedOffset));
+      ensureWindowCapacity(index);
+    },
+    [ensureWindowCapacity, onSelectDate, onVisibleWeekChange, setPageIndex],
+  );
+
+  const onMomentumScrollEnd = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (!pageWidth || isAdjustingRef.current) {
+        return;
+      }
+
+      const index = Math.round(event.nativeEvent.contentOffset.x / pageWidth);
+      const clamped = Math.max(
+        0,
+        Math.min(weekStartsRef.current.length - 1, index),
+      );
+
+      if (clamped === pageIndexRef.current) {
+        ensureWindowCapacity(clamped);
+        return;
+      }
+
+      handleWeekSettled(clamped);
+    },
+    [ensureWindowCapacity, handleWeekSettled, pageWidth],
+  );
+
+  const renderItem = useCallback(
+    ({ item: weekStart }: ListRenderItemInfo<string>) => (
+      <WeekPage
+        days={getWeekDays(weekStart)}
+        today={today}
+        selectedDate={selectedDate}
+        onSelectDate={onSelectDate}
+        width={pageWidth}
+      />
+    ),
+    [onSelectDate, pageWidth, selectedDate, today],
+  );
+
+  const getItemLayout = useCallback(
+    (_: ArrayLike<string> | null | undefined, index: number) => ({
+      length: pageWidth,
+      offset: pageWidth * index,
+      index,
+    }),
+    [pageWidth],
+  );
+
+  return (
+    <View
+      style={styles.weekPager}
+      onLayout={(event) => {
+        const width = event.nativeEvent.layout.width;
+        if (width > 0 && width !== pageWidth) {
+          setPageWidth(width);
+        }
+      }}
+    >
+      {pageWidth > 0 ? (
+        <FlatList
+          ref={listRef}
+          data={weekStarts}
+          keyExtractor={(item) => item}
+          horizontal
+          pagingEnabled
+          nestedScrollEnabled
+          showsHorizontalScrollIndicator={false}
+          initialScrollIndex={INITIAL_SIDE_WEEKS}
+          getItemLayout={getItemLayout}
+          renderItem={renderItem}
+          onMomentumScrollEnd={onMomentumScrollEnd}
+          onScrollToIndexFailed={({ index }) => {
+            listRef.current?.scrollToOffset({
+              offset: index * pageWidth,
+              animated: false,
+            });
+          }}
+          windowSize={5}
+          maxToRenderPerBatch={3}
+          initialNumToRender={3}
+          removeClippedSubviews
+        />
+      ) : null}
     </View>
   );
 }
@@ -162,9 +438,21 @@ export default function TodayScreen() {
   } = useAppData();
 
   const today = todayDateString();
-  const [selectedDate, setSelectedDate] = useState(today);
+  const todayWeekStart = getWeekStart(today);
 
-  const weekDays = useMemo(() => getWeekDays(today), [today]);
+  const [selectedDate, setSelectedDate] = useState(today);
+  const [visibleWeekStart, setVisibleWeekStart] = useState(todayWeekStart);
+  const [weekStarts, setWeekStarts] = useState(() =>
+    buildWeekWindow(todayWeekStart, INITIAL_SIDE_WEEKS),
+  );
+  const [pageIndex, setPageIndex] = useState(INITIAL_SIDE_WEEKS);
+  const listRef = useRef<FlatList<string> | null>(null);
+
+  const weekDays = useMemo(
+    () => getWeekDays(visibleWeekStart),
+    [visibleWeekStart],
+  );
+  const isViewingCurrentWeek = visibleWeekStart === todayWeekStart;
 
   const primaryObjective = useMemo(
     () => objectives.find((objective) => !objective.deletedAt),
@@ -179,22 +467,25 @@ export default function TodayScreen() {
   const keyResultTitles = useMemo(() => {
     const map = new Map<string, string>();
     for (const keyResult of keyResults) {
-      if (!keyResult.deletedAt) {
+      if (!keyResult.deletedAt && isItemActiveOnDate(keyResult, selectedDate)) {
         map.set(keyResult.id, keyResult.title);
       }
     }
     return map;
-  }, [keyResults]);
+  }, [keyResults, selectedDate]);
 
   const objectiveTitles = useMemo(() => {
     const map = new Map<string, string>();
     for (const objective of objectives) {
-      if (!objective.deletedAt) {
+      if (
+        !objective.deletedAt &&
+        isItemActiveOnDate(objective, selectedDate)
+      ) {
         map.set(objective.id, objective.title);
       }
     }
     return map;
-  }, [objectives]);
+  }, [objectives, selectedDate]);
 
   const sections = useMemo(
     () =>
@@ -223,6 +514,19 @@ export default function TodayScreen() {
 
   const checklistHeading = getChecklistHeading(selectedDate, today);
 
+  const jumpToToday = () => {
+    const centered = buildWeekWindow(todayWeekStart, INITIAL_SIDE_WEEKS);
+    const index = INITIAL_SIDE_WEEKS;
+    setWeekStarts(centered);
+    setPageIndex(index);
+    setVisibleWeekStart(todayWeekStart);
+    setSelectedDate(today);
+
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToIndex({ index, animated: true });
+    });
+  };
+
   const handleToggle = (item: ChecklistItem) => {
     if (!item.isInteractive) {
       return;
@@ -240,11 +544,34 @@ export default function TodayScreen() {
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.affirmation}>{affirmation}</Text>
 
-      <WeekDateStrip
-        days={weekDays}
+      <View style={styles.weekHeader}>
+        <Text style={styles.weekLabel}>
+          {formatDate(weekDays[0]?.dateString ?? visibleWeekStart)} –{' '}
+          {formatDate(weekDays[6]?.dateString ?? visibleWeekStart)}
+        </Text>
+        {!isViewingCurrentWeek ? (
+          <Pressable
+            onPress={jumpToToday}
+            style={({ pressed }) => [
+              styles.todayButton,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Text style={styles.todayButtonText}>Today</Text>
+          </Pressable>
+        ) : null}
+      </View>
+
+      <InfiniteWeekPager
         today={today}
         selectedDate={selectedDate}
         onSelectDate={setSelectedDate}
+        onVisibleWeekChange={setVisibleWeekStart}
+        listRef={listRef}
+        weekStarts={weekStarts}
+        setWeekStarts={setWeekStarts}
+        pageIndex={pageIndex}
+        setPageIndex={setPageIndex}
       />
 
       <Text style={styles.screenTitle}>{checklistHeading}</Text>
@@ -295,9 +622,35 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     paddingHorizontal: 8,
   },
+  weekHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+    minHeight: 28,
+  },
+  weekLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#888',
+  },
+  todayButton: {
+    backgroundColor: '#e8f1ff',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  todayButtonText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#007aff',
+  },
+  weekPager: {
+    marginBottom: 24,
+    minHeight: 64,
+  },
   weekStrip: {
     flexDirection: 'row',
-    marginBottom: 24,
     gap: 4,
   },
   weekDayCell: {

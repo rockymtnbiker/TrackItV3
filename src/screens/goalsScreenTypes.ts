@@ -45,6 +45,11 @@ export type MovePrompt =
       currentObjectiveId: string;
     };
 
+export type DateConflictPrompt = {
+  message: string;
+  onConfirm: () => void;
+};
+
 export type KeyResultKeepChoice = 'standalone' | 'relinkObjective';
 
 export function createId(prefix: string): string {
@@ -75,7 +80,6 @@ export function populateFormFromItem(
   keyActivities: KeyActivity[],
 ): {
   title: string;
-  targetCompletionDate: string;
   affirmation: string;
   targetNumber: string;
   unit: string;
@@ -86,7 +90,6 @@ export function populateFormFromItem(
 } {
   const empty = {
     title: '',
-    targetCompletionDate: '',
     affirmation: '',
     targetNumber: '',
     unit: '',
@@ -109,7 +112,8 @@ export function populateFormFromItem(
     return {
       ...empty,
       title: objective.title,
-      targetCompletionDate: objective.targetCompletionDate,
+      startDate: objective.startDate,
+      endDate: objective.endDate,
       affirmation: objective.affirmation ?? '',
     };
   }
@@ -139,6 +143,8 @@ export function populateFormFromItem(
     return {
       ...empty,
       title: habit.title,
+      startDate: habit.startDate,
+      endDate: habit.endDate,
       itemLinked: Boolean(habit.linkedGoalId),
     };
   }
@@ -151,6 +157,8 @@ export function populateFormFromItem(
   return {
     ...empty,
     title: activity.title,
+    startDate: activity.startDate,
+    endDate: activity.endDate,
     scheduledDays: [...activity.scheduledDays],
     itemLinked: Boolean(activity.linkedGoalId),
   };

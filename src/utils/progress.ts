@@ -22,9 +22,12 @@ export function keyResultProgressPercent(keyResult: KeyResult): number {
 export function objectiveProgressPercent(
   objectiveId: string,
   keyResults: KeyResult[],
+  referenceDate: string = todayDateString(),
 ): number {
   const objectiveKeyResults = keyResults.filter(
-    (keyResult) => keyResult.objectiveId === objectiveId,
+    (keyResult) =>
+      keyResult.objectiveId === objectiveId &&
+      keyResult.createdDate <= referenceDate,
   );
 
   if (objectiveKeyResults.length === 0) {
