@@ -1,9 +1,4 @@
-import type {
-  DailyHabit,
-  KeyActivity,
-  KeyResult,
-  Objective,
-} from '../types';
+import type { Goal, Habit, Milestone } from '../types';
 import { existsOnDate, todayDateString } from './date';
 
 export function isActive<T extends { deletedAt?: string }>(item: T): boolean {
@@ -17,21 +12,22 @@ export function existsByDate<T extends { createdDate: string }>(
   return existsOnDate(item.createdDate, dateString);
 }
 
-/**
- * Completions that count for active progress:
- * on/after createdDate and within [startDate, endDate].
- * Raw log entries outside the range are preserved but excluded here.
- */
 export function completionsInActiveRange(
   completionLog: string[],
   createdDate: string,
-  startDate: string,
-  endDate: string,
+  startDate?: string,
+  endDate?: string,
 ): string[] {
-  return completionLog.filter(
-    (date) =>
-      date >= createdDate && date >= startDate && date <= endDate,
-  );
+  const rangeStart = startDate || createdDate;
+  return completionLog.filter((date) => {
+    if (date < createdDate || date < rangeStart) {
+      return false;
+    }
+    if (endDate && date > endDate) {
+      return false;
+    }
+    return true;
+  });
 }
 
 /** @deprecated Prefer completionsInActiveRange */
@@ -42,26 +38,18 @@ export function completionsSinceCreated(
   return completionLog.filter((date) => date >= createdDate);
 }
 
-export function filterActive<T extends { deletedAt?: string }>(
-  items: T[],
-): T[] {
+export function filterActive<T extends { deletedAt?: string }>(items: T[]): T[] {
   return items.filter(isActive);
 }
 
-export function hasHistoricalData(
-  item: DailyHabit | KeyActivity,
-): boolean {
+export function hasHistoricalData(item: Habit): boolean {
   return item.completionLog.length > 0;
 }
 
-/**
- * Dashboard trackable items: active (and already created by referenceDate),
- * or soft-deleted with completion history that can still count historically.
- */
 export function dashboardTrackableHabits(
-  habits: DailyHabit[],
+  habits: Habit[],
   referenceDate: string = todayDateString(),
-): DailyHabit[] {
+): Habit[] {
   return habits.filter(
     (habit) =>
       (isActive(habit) && existsByDate(habit, referenceDate)) ||
@@ -69,99 +57,58 @@ export function dashboardTrackableHabits(
   );
 }
 
-export function dashboardTrackableActivities(
-  activities: KeyActivity[],
-  referenceDate: string = todayDateString(),
-): KeyActivity[] {
-  return activities.filter(
-    (activity) =>
-      (isActive(activity) && existsByDate(activity, referenceDate)) ||
-      (!isActive(activity) && hasHistoricalData(activity)),
-  );
+export function milestonesForGoal(
+  milestones: Milestone[],
+  goalId: string,
+): Milestone[] {
+  return filterActive(milestones)
+    .filter((milestone) => milestone.goalId === goalId)
+    .sort((a, b) => a.sortOrder - b.sortOrder);
 }
 
-export function activeKeyResultsForObjective(
-  keyResults: KeyResult[],
-  objectiveId: string,
-): KeyResult[] {
-  return filterActive(keyResults).filter(
-    (keyResult) => keyResult.objectiveId === objectiveId,
-  );
+export function linkedHabitsForMilestone(
+  habits: Habit[],
+  milestoneId: string,
+): Habit[] {
+  return filterActive(habits)
+    .filter(
+      (habit) =>
+        habit.linkedGoalType === 'milestone' &&
+        habit.linkedGoalId === milestoneId,
+    )
+    .sort((a, b) => a.sortOrder - b.sortOrder);
 }
 
-export function linkedHabitsForKeyResult(
-  habits: DailyHabit[],
-  keyResultId: string,
-): DailyHabit[] {
-  return filterActive(habits).filter(
-    (habit) =>
-      habit.linkedGoalType === 'keyResult' &&
-      habit.linkedGoalId === keyResultId,
-  );
+export function linkedHabitsForGoal(habits: Habit[], goalId: string): Habit[] {
+  return filterActive(habits)
+    .filter(
+      (habit) =>
+        habit.linkedGoalType === 'goal' && habit.linkedGoalId === goalId,
+    )
+    .sort((a, b) => a.sortOrder - b.sortOrder);
 }
 
-export function linkedActivitiesForKeyResult(
-  activities: KeyActivity[],
-  keyResultId: string,
-): KeyActivity[] {
-  return filterActive(activities).filter(
-    (activity) =>
-      activity.linkedGoalType === 'keyResult' &&
-      activity.linkedGoalId === keyResultId,
-  );
+/** Habits not linked to a Goal or Milestone. */
+export function standaloneHabits(habits: Habit[]): Habit[] {
+  return filterActive(habits)
+    .filter((habit) => !habit.linkedGoalId)
+    .sort((a, b) => a.sortOrder - b.sortOrder);
 }
 
-export function linkedHabitsForObjective(
-  habits: DailyHabit[],
-  objectiveId: string,
-): DailyHabit[] {
-  return filterActive(habits).filter(
-    (habit) =>
-      habit.linkedGoalType === 'objective' &&
-      habit.linkedGoalId === objectiveId,
-  );
-}
-
-export function linkedActivitiesForObjective(
-  activities: KeyActivity[],
-  objectiveId: string,
-): KeyActivity[] {
-  return filterActive(activities).filter(
-    (activity) =>
-      activity.linkedGoalType === 'objective' &&
-      activity.linkedGoalId === objectiveId,
-  );
-}
-
-export function keyResultsForObjective(
-  keyResults: KeyResult[],
-  objectiveId: string,
-): KeyResult[] {
-  return filterActive(keyResults).filter(
-    (keyResult) => keyResult.objectiveId === objectiveId,
-  );
-}
-
-export function countObjectiveDependents(
-  objectiveId: string,
-  keyResults: KeyResult[],
-  dailyHabits: DailyHabit[],
-  keyActivities: KeyActivity[],
+export function countGoalDependents(
+  goalId: string,
+  milestones: Milestone[],
+  habits: Habit[],
 ): number {
   return (
-    keyResultsForObjective(keyResults, objectiveId).length +
-    linkedHabitsForObjective(dailyHabits, objectiveId).length +
-    linkedActivitiesForObjective(keyActivities, objectiveId).length
+    milestonesForGoal(milestones, goalId).length +
+    linkedHabitsForGoal(habits, goalId).length
   );
 }
 
-export function countKeyResultDependents(
-  keyResultId: string,
-  dailyHabits: DailyHabit[],
-  keyActivities: KeyActivity[],
+export function countMilestoneDependents(
+  milestoneId: string,
+  habits: Habit[],
 ): number {
-  return (
-    linkedHabitsForKeyResult(dailyHabits, keyResultId).length +
-    linkedActivitiesForKeyResult(keyActivities, keyResultId).length
-  );
+  return linkedHabitsForMilestone(habits, milestoneId).length;
 }

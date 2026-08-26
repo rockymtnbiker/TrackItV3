@@ -1,8 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import DashboardScreen from '../screens/DashboardScreen';
-import GoalsScreen from '../screens/GoalsScreen';
 import TodayScreen from '../screens/TodayScreen';
+import GoalsStackNavigator from './GoalsStackNavigator';
 
 export type RootTabParamList = {
   Today: undefined;
@@ -30,8 +30,9 @@ export default function TabNavigator() {
       />
       <Tab.Screen
         name="Goals"
-        component={GoalsScreen}
+        component={GoalsStackNavigator}
         options={{
+          headerShown: false,
           tabBarIcon: ({ focused, color, size }) => (
             <Ionicons
               name={focused ? 'flag' : 'flag-outline'}

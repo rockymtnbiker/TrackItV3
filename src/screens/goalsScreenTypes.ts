@@ -1,48 +1,52 @@
-import type { DailyHabit, KeyActivity, KeyResult, Objective } from '../types';
+﻿import type {
+  Goal,
+  GoalCategory,
+  GoalStatus,
+  Habit,
+  Milestone,
+  TargetPeriod,
+  Weekday,
+} from '../types';
 
 export type ItemLinkContext =
-  | { scope: 'objective'; objectiveId: string }
-  | { scope: 'keyResult'; keyResultId: string }
+  | { scope: 'goal'; goalId: string }
+  | { scope: 'milestone'; milestoneId: string }
   | { scope: 'standalone' };
 
 export type FormMode =
-  | { type: 'objective'; action: 'create' }
-  | { type: 'objective'; action: 'edit'; id: string }
-  | { type: 'keyResult'; action: 'create'; objectiveId: string }
-  | { type: 'keyResult'; action: 'edit'; id: string }
-  | { type: 'dailyHabit'; action: 'create'; link: ItemLinkContext }
-  | { type: 'dailyHabit'; action: 'edit'; id: string }
-  | { type: 'keyActivity'; action: 'create'; link: ItemLinkContext }
-  | { type: 'keyActivity'; action: 'edit'; id: string };
+  | { type: 'goal'; action: 'create' }
+  | { type: 'goal'; action: 'edit'; id: string }
+  | { type: 'milestone'; action: 'create'; goalId: string }
+  | { type: 'milestone'; action: 'edit'; id: string }
+  | { type: 'habit'; action: 'create'; link: ItemLinkContext }
+  | { type: 'habit'; action: 'edit'; id: string };
 
 export type DeletePrompt =
-  | { kind: 'dailyHabit'; id: string; title: string }
-  | { kind: 'keyActivity'; id: string; title: string }
+  | { kind: 'habit'; id: string; title: string }
   | {
-      kind: 'keyResult';
+      kind: 'milestone';
       id: string;
       title: string;
       dependentCount: number;
-      parentObjectiveTitle: string;
-      parentObjectiveId: string;
+      parentGoalTitle: string;
+      parentGoalId: string;
     }
   | {
-      kind: 'objective';
+      kind: 'goal';
       id: string;
       title: string;
       dependentCount: number;
-      keyResultCount: number;
-      otherObjectives: Objective[];
+      milestoneCount: number;
+      otherGoals: Goal[];
     };
 
 export type MovePrompt =
-  | { kind: 'dailyHabit'; id: string; title: string }
-  | { kind: 'keyActivity'; id: string; title: string }
+  | { kind: 'habit'; id: string; title: string }
   | {
-      kind: 'keyResult';
+      kind: 'milestone';
       id: string;
       title: string;
-      currentObjectiveId: string;
+      currentGoalId: string;
     };
 
 export type DateConflictPrompt = {
@@ -50,7 +54,7 @@ export type DateConflictPrompt = {
   onConfirm: () => void;
 };
 
-export type KeyResultKeepChoice = 'standalone' | 'relinkObjective';
+export type MilestoneKeepChoice = 'standalone' | 'relinkGoal';
 
 export function createId(prefix: string): string {
   return `${prefix}-${Date.now()}`;
@@ -62,104 +66,108 @@ export function getFormTitle(formMode: FormMode | null): string {
   }
 
   const labels: Record<FormMode['type'], string> = {
-    objective: 'Objective',
-    keyResult: 'Key Result',
-    dailyHabit: 'Daily Habit',
-    keyActivity: 'Key Activity',
+    goal: 'Goal',
+    milestone: 'Milestone',
+    habit: 'Habit',
   };
 
   const verb = formMode.action === 'edit' ? 'Edit' : 'Add';
   return `${verb} ${labels[formMode.type]}`;
 }
 
-export function populateFormFromItem(
-  formMode: FormMode,
-  objectives: Objective[],
-  keyResults: KeyResult[],
-  dailyHabits: DailyHabit[],
-  keyActivities: KeyActivity[],
-): {
+export type FormValues = {
   title: string;
-  affirmation: string;
-  targetNumber: string;
+  category: GoalCategory | '';
+  target: string;
   unit: string;
+  period: TargetPeriod;
   startDate: string;
   endDate: string;
-  scheduledDays: KeyActivity['scheduledDays'];
+  scheduledDays: Weekday[];
   itemLinked: boolean;
-} {
-  const empty = {
+  status: GoalStatus;
+};
+
+export function populateFormFromItem(
+  formMode: FormMode,
+  goals: Goal[],
+  milestones: Milestone[],
+  habits: Habit[],
+): FormValues {
+  const empty: FormValues = {
     title: '',
-    affirmation: '',
-    targetNumber: '',
+    category: '',
+    target: '',
     unit: '',
+    period: 'None',
     startDate: '',
     endDate: '',
-    scheduledDays: [] as KeyActivity['scheduledDays'],
+    scheduledDays: [],
     itemLinked: true,
+    status: 'active',
   };
 
   if (formMode.action !== 'edit') {
+    if (formMode.type === 'milestone') {
+      const parent = goals.find((goal) => goal.id === formMode.goalId);
+      return {
+        ...empty,
+        category: parent?.category ?? '',
+      };
+    }
     return empty;
   }
 
-  if (formMode.type === 'objective') {
-    const objective = objectives.find((item) => item.id === formMode.id);
-    if (!objective) {
+  if (formMode.type === 'goal') {
+    const goal = goals.find((item) => item.id === formMode.id);
+    if (!goal) {
       return empty;
     }
 
     return {
       ...empty,
-      title: objective.title,
-      startDate: objective.startDate,
-      endDate: objective.endDate,
-      affirmation: objective.affirmation ?? '',
+      title: goal.title,
+      startDate: goal.startDate,
+      endDate: goal.endDate,
+      category: goal.category ?? '',
+      target: goal.target != null ? String(goal.target) : '',
+      unit: goal.unit ?? '',
+      period: goal.period ?? 'None',
+      status: goal.status ?? 'active',
     };
   }
 
-  if (formMode.type === 'keyResult') {
-    const keyResult = keyResults.find((item) => item.id === formMode.id);
-    if (!keyResult) {
+  if (formMode.type === 'milestone') {
+    const milestone = milestones.find((item) => item.id === formMode.id);
+    if (!milestone) {
       return empty;
     }
 
     return {
       ...empty,
-      title: keyResult.title,
-      targetNumber: String(keyResult.targetNumber),
-      unit: keyResult.unit,
-      startDate: keyResult.startDate,
-      endDate: keyResult.endDate,
+      title: milestone.title,
+      startDate: milestone.startDate ?? '',
+      endDate: milestone.endDate ?? '',
+      category: milestone.category ?? '',
+      target: milestone.target != null ? String(milestone.target) : '',
+      unit: milestone.unit ?? '',
+      period: milestone.period ?? 'None',
+      status: milestone.status ?? 'active',
     };
   }
 
-  if (formMode.type === 'dailyHabit') {
-    const habit = dailyHabits.find((item) => item.id === formMode.id);
-    if (!habit) {
-      return empty;
-    }
-
-    return {
-      ...empty,
-      title: habit.title,
-      startDate: habit.startDate,
-      endDate: habit.endDate,
-      itemLinked: Boolean(habit.linkedGoalId),
-    };
-  }
-
-  const activity = keyActivities.find((item) => item.id === formMode.id);
-  if (!activity) {
+  const habit = habits.find((item) => item.id === formMode.id);
+  if (!habit) {
     return empty;
   }
 
   return {
     ...empty,
-    title: activity.title,
-    startDate: activity.startDate,
-    endDate: activity.endDate,
-    scheduledDays: [...activity.scheduledDays],
-    itemLinked: Boolean(activity.linkedGoalId),
+    title: habit.title,
+    startDate: habit.startDate ?? '',
+    endDate: habit.endDate ?? '',
+    scheduledDays: [...habit.scheduledDays],
+    itemLinked: Boolean(habit.linkedGoalId),
+    status: habit.status ?? 'active',
   };
 }

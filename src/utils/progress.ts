@@ -1,4 +1,4 @@
-import type { KeyResult } from '../types';
+import type { Milestone } from '../types';
 import {
   countCompletionsInMonth,
   countCompletionsInWeek,
@@ -6,40 +6,43 @@ import {
   weeksInMonth,
 } from './date';
 
-export const DAILY_HABIT_WEEKLY_TARGET = 7;
-
-export function keyResultProgressPercent(keyResult: KeyResult): number {
-  if (keyResult.targetNumber <= 0) {
+export function milestoneProgressPercent(milestone: Milestone): number {
+  if (milestone.target == null || milestone.target <= 0) {
     return 0;
   }
 
-  return Math.min(
-    100,
-    (keyResult.currentProgress / keyResult.targetNumber) * 100,
-  );
+  // No currentProgress field — optional targets are informational until tracked.
+  return 0;
 }
 
-export function objectiveProgressPercent(
-  objectiveId: string,
-  keyResults: KeyResult[],
+export function goalProgressPercent(
+  goalId: string,
+  milestones: Milestone[],
   referenceDate: string = todayDateString(),
 ): number {
-  const objectiveKeyResults = keyResults.filter(
-    (keyResult) =>
-      keyResult.objectiveId === objectiveId &&
-      keyResult.createdDate <= referenceDate,
+  const goalMilestones = milestones.filter(
+    (milestone) =>
+      milestone.goalId === goalId && milestone.createdDate <= referenceDate,
   );
 
-  if (objectiveKeyResults.length === 0) {
+  if (goalMilestones.length === 0) {
     return 0;
   }
 
-  const total = objectiveKeyResults.reduce(
-    (sum, keyResult) => sum + keyResultProgressPercent(keyResult),
+  const measurable = goalMilestones.filter(
+    (milestone) => milestone.target != null && milestone.target > 0,
+  );
+
+  if (measurable.length === 0) {
+    return 0;
+  }
+
+  const total = measurable.reduce(
+    (sum, milestone) => sum + milestoneProgressPercent(milestone),
     0,
   );
 
-  return Math.round(total / objectiveKeyResults.length);
+  return Math.round(total / measurable.length);
 }
 
 export function weeklyProgressPercent(

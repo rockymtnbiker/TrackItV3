@@ -1,5 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useMemo, useState } from 'react';
+import DateTimePicker, {
+  type DateTimePickerEvent,
+} from '@react-native-community/datetimepicker';
+import { useMemo, useState, type ReactNode } from 'react';
 import {
   KeyboardAvoidingView,
   Modal,
@@ -14,29 +17,36 @@ import {
 } from 'react-native';
 import SwipeableRow from '../components/SwipeableRow';
 import {
-  keyResultsForObjective,
-  linkedActivitiesForKeyResult,
-  linkedActivitiesForObjective,
-  linkedHabitsForKeyResult,
-  linkedHabitsForObjective,
+  linkedHabitsForGoal,
+  linkedHabitsForMilestone,
+  milestonesForGoal,
   useAppData,
 } from '../context/AppDataContext';
 import type {
-  DailyHabit,
-  KeyActivity,
-  KeyResult,
+  Goal,
+  GoalCategory,
+  GoalStatus,
+  Habit,
   LinkedGoalType,
+  Milestone,
   MoveTarget,
-  Objective,
+  TargetPeriod,
   Weekday,
 } from '../types';
 import {
-  countKeyResultDependents,
-  countObjectiveDependents,
+  ALL_WEEKDAYS,
+  GOAL_CATEGORIES,
+} from '../types';
+import {
+  countGoalDependents,
+  countMilestoneDependents,
 } from '../utils/activeItems';
 import {
+  dateFromIso,
   formatDate,
+  formatDateMDY,
   formatScheduledDays,
+  isoFromDate,
   todayDateString,
   WEEKDAY_SHORT_LABELS,
   WEEKDAYS,
@@ -46,6 +56,7 @@ import {
   formatDateRangeConflictMessage,
 } from '../utils/dateRange';
 import { calculateStreak } from '../utils/streak';
+import { formatTargetLabel } from '../utils/targetLabel';
 import {
   createId,
   getFormTitle,
@@ -54,7 +65,7 @@ import {
   type DeletePrompt,
   type FormMode,
   type ItemLinkContext,
-  type KeyResultKeepChoice,
+  type MilestoneKeepChoice,
   type MovePrompt,
 } from './goalsScreenTypes';
 
@@ -66,10 +77,10 @@ function resolveItemLink(
     return {};
   }
 
-  if (link.scope === 'objective') {
+  if (link.scope === 'goal') {
     return {
-      linkedGoalId: link.objectiveId,
-      linkedGoalType: 'objective',
+      linkedGoalId: link.goalId,
+      linkedGoalType: 'goal',
     };
   }
 
@@ -78,33 +89,22 @@ function resolveItemLink(
   }
 
   return {
-    linkedGoalId: link.keyResultId,
-    linkedGoalType: 'keyResult',
+    linkedGoalId: link.milestoneId,
+    linkedGoalType: 'milestone',
   };
 }
 
-function AddButton({
-  label,
-  onPress,
-  small,
-}: {
-  label: string;
-  onPress: () => void;
-  small?: boolean;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        small ? styles.addButtonSmall : styles.addButton,
-        pressed && styles.pressed,
-      ]}
-    >
-      <Text style={small ? styles.addButtonTextSmall : styles.addButtonText}>
-        {label}
-      </Text>
-    </Pressable>
-  );
+function cycleGoalStatus(current: GoalStatus): GoalStatus {
+  return current === 'active' ? 'done' : 'active';
+}
+
+function parseOptionalTarget(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function StreakBadge({ streak }: { streak: number }) {
@@ -156,236 +156,428 @@ function DayPicker({
   );
 }
 
+function FormFieldRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <View style={styles.formFieldRow}>
+      <Text style={styles.formFieldLabel}>{label}</Text>
+      <View style={styles.formFieldControl}>{children}</View>
+    </View>
+  );
+}
+
+const PERIOD_OPTIONS: { value: TargetPeriod; label: string }[] = [
+  { value: 'None', label: 'None' },
+  { value: 'Day', label: 'Day' },
+  { value: 'Week', label: 'Week' },
+  { value: 'Month', label: 'Month' },
+  { value: 'Instance', label: 'Per Session' },
+];
+
+function FormSelectRow({
+  label,
+  value,
+  placeholder,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  options: { value: string; label: string }[];
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selectedLabel =
+    options.find((option) => option.value === value)?.label ?? '';
+
+  return (
+    <>
+      <FormFieldRow label={label}>
+        <Pressable
+          onPress={() => setOpen(true)}
+          style={({ pressed }) => [
+            styles.formSelectButton,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Text
+            style={[
+              styles.formSelectText,
+              !selectedLabel && styles.formSelectPlaceholder,
+            ]}
+            numberOfLines={1}
+          >
+            {selectedLabel || placeholder}
+          </Text>
+          <Ionicons name="chevron-down" size={16} color="#666" />
+        </Pressable>
+      </FormFieldRow>
+
+      <Modal
+        visible={open}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setOpen(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.menuCard}>
+            <Text style={styles.modalTitle}>{label}</Text>
+            <ScrollView style={styles.moveList}>
+              {options.map((option) => (
+                <Pressable
+                  key={option.value}
+                  onPress={() => {
+                    onChange(option.value);
+                    setOpen(false);
+                  }}
+                  style={({ pressed }) => [
+                    styles.choiceRow,
+                    option.value === value && styles.choiceRowSelected,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.choiceText}>{option.label}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+            <View style={styles.modalActions}>
+              <Pressable
+                onPress={() => setOpen(false)}
+                style={styles.modalButtonSecondary}
+              >
+                <Text style={styles.modalButtonSecondaryText}>Cancel</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
+}
+
+function FormDateRow({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (isoDate: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const pickerValue = dateFromIso(value || todayDateString());
+
+  const handleChange = (event: DateTimePickerEvent, date?: Date) => {
+    if (Platform.OS === 'android') {
+      setOpen(false);
+    }
+    if (event.type === 'dismissed') {
+      setOpen(false);
+      return;
+    }
+    if (date) {
+      onChange(isoFromDate(date));
+    }
+  };
+
+  return (
+    <>
+      <FormFieldRow label={label}>
+        <Pressable
+          onPress={() => setOpen(true)}
+          style={({ pressed }) => [
+            styles.formSelectButton,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Text
+            style={[
+              styles.formSelectText,
+              !value && styles.formSelectPlaceholder,
+            ]}
+          >
+            {value ? formatDateMDY(value) : 'mm/dd/yyyy'}
+          </Text>
+          <Ionicons name="calendar-outline" size={16} color="#666" />
+        </Pressable>
+      </FormFieldRow>
+
+      {open && Platform.OS === 'android' ? (
+        <DateTimePicker
+          value={pickerValue}
+          mode="date"
+          display="default"
+          onChange={handleChange}
+        />
+      ) : null}
+
+      <Modal
+        visible={open && Platform.OS === 'ios'}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setOpen(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.menuCard}>
+            <Text style={styles.modalTitle}>{label}</Text>
+            <DateTimePicker
+              value={pickerValue}
+              mode="date"
+              display="spinner"
+              onChange={handleChange}
+            />
+            <View style={styles.modalActions}>
+              <Pressable
+                onPress={() => setOpen(false)}
+                style={styles.modalButtonPrimary}
+              >
+                <Text style={styles.modalButtonPrimaryText}>Done</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
+}
+
 function HabitListItem({
   habit,
   onEdit,
   onMove,
   onDelete,
 }: {
-  habit: DailyHabit;
+  habit: Habit;
   onEdit: () => void;
   onMove: () => void;
   onDelete: () => void;
 }) {
-  return (
-    <SwipeableRow onEdit={onEdit} onMove={onMove} onDelete={onDelete}>
-      <View style={styles.swipeRowContent}>
-        <Text style={styles.subListItem}>{habit.title}</Text>
-        <StreakBadge streak={calculateStreak(habit.completionLog)} />
-      </View>
-    </SwipeableRow>
-  );
-}
+  const daysSummary =
+    habit.scheduledDays.length === ALL_WEEKDAYS.length
+      ? 'daily'
+      : formatScheduledDays(habit.scheduledDays);
 
-function ActivityListItem({
-  activity,
-  onEdit,
-  onMove,
-  onDelete,
-}: {
-  activity: KeyActivity;
-  onEdit: () => void;
-  onMove: () => void;
-  onDelete: () => void;
-}) {
   return (
     <SwipeableRow onEdit={onEdit} onMove={onMove} onDelete={onDelete}>
-      <View style={styles.swipeRowContent}>
-        <Text style={styles.subListItem}>
-          {activity.title} ({formatScheduledDays(activity.scheduledDays)})
+      <Pressable
+        onPress={onEdit}
+        style={({ pressed }) => [
+          styles.swipeRowContent,
+          pressed && styles.pressed,
+        ]}
+      >
+        <Text
+          style={[
+            styles.subListItem,
+            habit.status === 'done' && styles.titleDone,
+          ]}
+        >
+          H: {habit.title}
+          {daysSummary ? ` (${daysSummary})` : ''}
         </Text>
-      </View>
+        <StreakBadge streak={calculateStreak(habit.completionLog)} />
+      </Pressable>
     </SwipeableRow>
   );
 }
 
-function KeyResultRow({
-  keyResult,
-  dailyHabits,
-  keyActivities,
+function MilestoneRow({
+  milestone,
+  habits,
   isExpanded,
-  onToggle,
-  onAddDailyHabit,
-  onAddKeyActivity,
+  onToggleExpand,
   onEdit,
   onMove,
   onDelete,
   onEditHabit,
   onMoveHabit,
   onDeleteHabit,
-  onEditActivity,
-  onMoveActivity,
-  onDeleteActivity,
 }: {
-  keyResult: KeyResult;
-  dailyHabits: DailyHabit[];
-  keyActivities: KeyActivity[];
+  milestone: Milestone;
+  habits: Habit[];
   isExpanded: boolean;
-  onToggle: () => void;
-  onAddDailyHabit: () => void;
-  onAddKeyActivity: () => void;
+  onToggleExpand: () => void;
   onEdit: () => void;
   onMove: () => void;
   onDelete: () => void;
-  onEditHabit: (habit: DailyHabit) => void;
-  onMoveHabit: (habit: DailyHabit) => void;
-  onDeleteHabit: (habit: DailyHabit) => void;
-  onEditActivity: (activity: KeyActivity) => void;
-  onMoveActivity: (activity: KeyActivity) => void;
-  onDeleteActivity: (activity: KeyActivity) => void;
+  onEditHabit: (habit: Habit) => void;
+  onMoveHabit: (habit: Habit) => void;
+  onDeleteHabit: (habit: Habit) => void;
 }) {
-  const linkedHabits = linkedHabitsForKeyResult(dailyHabits, keyResult.id);
-  const linkedActivities = linkedActivitiesForKeyResult(
-    keyActivities,
-    keyResult.id,
-  );
+  const linkedHabits = linkedHabitsForMilestone(habits, milestone.id);
+  const hasDates = Boolean(milestone.startDate || milestone.endDate);
+  const targetLabel = formatTargetLabel(milestone);
 
   return (
-    <View style={styles.keyResultCard}>
+    <View style={styles.milestoneCard}>
       <SwipeableRow onEdit={onEdit} onMove={onMove} onDelete={onDelete}>
-        <Pressable
-          onPress={onToggle}
-          style={({ pressed }) => [
-            styles.keyResultHeader,
-            pressed && styles.pressed,
-          ]}
-        >
-          <Text style={styles.keyResultTitle}>{keyResult.title}</Text>
-          <Text style={styles.keyResultProgress}>
-            {keyResult.currentProgress} / {keyResult.targetNumber}{' '}
-            {keyResult.unit}
-          </Text>
-          <Text style={styles.keyResultDates}>
-            {formatDate(keyResult.startDate)} – {formatDate(keyResult.endDate)}
-          </Text>
-        </Pressable>
-      </SwipeableRow>
-
-      {isExpanded && (
-        <View style={styles.linkedSection}>
-          <Text style={styles.subListLabel}>Daily Habits</Text>
-          <View style={styles.subList}>
-            {linkedHabits.length > 0 ? (
-              linkedHabits.map((habit) => (
-                <HabitListItem
-                  key={habit.id}
-                  habit={habit}
-                  onEdit={() => onEditHabit(habit)}
-                  onMove={() => onMoveHabit(habit)}
-                  onDelete={() => onDeleteHabit(habit)}
-                />
-              ))
+        <View style={styles.milestoneHeader}>
+          <Pressable
+            onPress={onEdit}
+            style={({ pressed }) => [pressed && styles.pressed]}
+          >
+            <Text
+              style={[
+                styles.milestoneTitle,
+                milestone.status === 'done' && styles.titleDone,
+              ]}
+            >
+              M: {milestone.title}
+            </Text>
+          </Pressable>
+          {targetLabel ? (
+            <Text style={styles.milestoneProgress}>{targetLabel}</Text>
+          ) : null}
+          <View style={styles.dateExpandRow}>
+            {hasDates ? (
+              <Text style={styles.milestoneDates}>
+                {milestone.startDate
+                  ? formatDate(milestone.startDate)
+                  : '—'}{' '}
+                –{' '}
+                {milestone.endDate ? formatDate(milestone.endDate) : '—'}
+              </Text>
             ) : (
-              <Text style={styles.subListEmpty}>None</Text>
+              <View style={styles.dateExpandSpacer} />
             )}
-          </View>
-
-          <Text style={styles.subListLabel}>Key Activities</Text>
-          <View style={styles.subList}>
-            {linkedActivities.length > 0 ? (
-              linkedActivities.map((activity) => (
-                <ActivityListItem
-                  key={activity.id}
-                  activity={activity}
-                  onEdit={() => onEditActivity(activity)}
-                  onMove={() => onMoveActivity(activity)}
-                  onDelete={() => onDeleteActivity(activity)}
-                />
-              ))
-            ) : (
-              <Text style={styles.subListEmpty}>None</Text>
-            )}
-          </View>
-
-          <View style={styles.inlineAddButtons}>
-            <AddButton label="+ Add Daily Habit" onPress={onAddDailyHabit} small />
-            <AddButton
-              label="+ Add Key Activity"
-              onPress={onAddKeyActivity}
-              small
-            />
+            <Pressable
+              onPress={onToggleExpand}
+              hitSlop={8}
+              style={({ pressed }) => [
+                styles.expandButton,
+                pressed && styles.pressed,
+              ]}
+              accessibilityLabel={isExpanded ? 'Collapse' : 'Expand'}
+            >
+              <Ionicons
+                name={isExpanded ? 'chevron-up' : 'chevron-down'}
+                size={20}
+                color="#666"
+              />
+            </Pressable>
           </View>
         </View>
-      )}
+      </SwipeableRow>
+
+      {isExpanded && linkedHabits.length > 0 ? (
+        <View style={styles.linkedSection}>
+          <View style={styles.subList}>
+            {linkedHabits.map((habit) => (
+              <HabitListItem
+                key={habit.id}
+                habit={habit}
+                onEdit={() => onEditHabit(habit)}
+                onMove={() => onMoveHabit(habit)}
+                onDelete={() => onDeleteHabit(habit)}
+              />
+            ))}
+          </View>
+        </View>
+      ) : null}
     </View>
   );
 }
 
 export default function GoalsScreen() {
   const {
-    objectives,
-    keyResults,
-    activeDailyHabits,
-    activeKeyActivities,
-    dailyHabits,
-    keyActivities,
-    setObjectives,
-    setKeyResults,
-    setDailyHabits,
-    setKeyActivities,
-    softDeleteObjective,
-    softDeleteKeyResult,
-    softDeleteDailyHabit,
-    softDeleteKeyActivity,
-    moveDailyHabit,
-    moveKeyActivity,
-    moveKeyResult,
+    goals,
+    milestones,
+    habits,
+    activeGoals,
+    activeMilestones,
+    activeHabits,
+    setGoals,
+    setMilestones,
+    setHabits,
+    softDeleteGoal,
+    softDeleteMilestone,
+    softDeleteHabit,
+    moveHabit,
+    moveMilestone,
   } = useAppData();
 
-  const [expandedObjectiveId, setExpandedObjectiveId] = useState<string | null>(
-    null,
+  const [expandedGoalIds, setExpandedGoalIds] = useState<Set<string>>(
+    () => new Set(),
   );
-  const [expandedKeyResultId, setExpandedKeyResultId] = useState<
-    string | null
-  >(null);
+  const [expandedMilestoneIds, setExpandedMilestoneIds] = useState<
+    Set<string>
+  >(() => new Set());
 
-  const activeObjectives = useMemo(
-    () => objectives.filter((item) => !item.deletedAt),
-    [objectives],
+  const visibleGoals = useMemo(
+    () => activeGoals.filter((goal) => goal.status !== 'done'),
+    [activeGoals],
   );
-  const activeKeyResults = useMemo(
-    () => keyResults.filter((item) => !item.deletedAt),
-    [keyResults],
+
+  const allUndeletedGoals = useMemo(
+    () => goals.filter((goal) => !goal.deletedAt),
+    [goals],
   );
 
   const standaloneHabits = useMemo(
-    () => activeDailyHabits.filter((habit) => !habit.linkedGoalId),
-    [activeDailyHabits],
-  );
-  const standaloneActivities = useMemo(
-    () => activeKeyActivities.filter((activity) => !activity.linkedGoalId),
-    [activeKeyActivities],
+    () => activeHabits.filter((habit) => !habit.linkedGoalId),
+    [activeHabits],
   );
 
   const [formMode, setFormMode] = useState<FormMode | null>(null);
+  const [typeMenuVisible, setTypeMenuVisible] = useState(false);
+  const [childTypeMenu, setChildTypeMenu] = useState<{
+    parentType: 'goal' | 'milestone';
+    parentId: string;
+  } | null>(null);
+  const [linkPickerType, setLinkPickerType] = useState<
+    'milestone' | 'habit' | null
+  >(null);
   const [deletePrompt, setDeletePrompt] = useState<DeletePrompt | null>(null);
   const [movePrompt, setMovePrompt] = useState<MovePrompt | null>(null);
   const [dateConflictPrompt, setDateConflictPrompt] =
     useState<DateConflictPrompt | null>(null);
-  const [keyResultKeepChoice, setKeyResultKeepChoice] =
-    useState<KeyResultKeepChoice>('standalone');
-  const [reassignObjectiveId, setReassignObjectiveId] = useState<string | null>(
-    null,
-  );
+  const [milestoneKeepChoice, setMilestoneKeepChoice] =
+    useState<MilestoneKeepChoice>('standalone');
+  const [reassignGoalId, setReassignGoalId] = useState<string | null>(null);
 
   const [title, setTitle] = useState('');
-  const [affirmation, setAffirmation] = useState('');
-  const [targetNumber, setTargetNumber] = useState('');
+  const [category, setCategory] = useState<GoalCategory | ''>('');
+  const [target, setTarget] = useState('');
   const [unit, setUnit] = useState('');
+  const [period, setPeriod] = useState<TargetPeriod>('None');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [scheduledDays, setScheduledDays] = useState<Weekday[]>([]);
   const [itemLinked, setItemLinked] = useState(true);
+  const [itemStatus, setItemStatus] = useState<GoalStatus>('active');
 
   const resetForm = () => {
     setTitle('');
-    setAffirmation('');
-    setTargetNumber('');
+    setCategory('');
+    setTarget('');
     setUnit('');
+    setPeriod('None');
     setStartDate('');
     setEndDate('');
     setScheduledDays([]);
     setItemLinked(true);
+    setItemStatus('active');
+  };
+
+  const applyFormValues = (
+    values: ReturnType<typeof populateFormFromItem>,
+  ) => {
+    setTitle(values.title);
+    setCategory(values.category);
+    setTarget(values.target);
+    setUnit(values.unit);
+    setPeriod(values.period);
+    setStartDate(values.startDate);
+    setEndDate(values.endDate);
+    setScheduledDays(values.scheduledDays);
+    setItemLinked(values.itemLinked);
+    setItemStatus(values.status);
   };
 
   const closeForm = () => {
@@ -396,34 +588,112 @@ export default function GoalsScreen() {
 
   const openCreateForm = (mode: FormMode) => {
     resetForm();
+    const values = populateFormFromItem(mode, goals, milestones, habits);
+    applyFormValues(values);
+    // Milestones allow empty dates; Goal/Habit default start to today.
+    if (mode.type === 'milestone') {
+      setStartDate(values.startDate);
+      setEndDate(values.endDate);
+    } else {
+      setStartDate(values.startDate || todayDateString());
+    }
     setFormMode(mode);
-    setStartDate(todayDateString());
+    setTypeMenuVisible(false);
+    setLinkPickerType(null);
     if (
       mode.action === 'create' &&
-      (mode.type === 'dailyHabit' || mode.type === 'keyActivity') &&
-      mode.link.scope === 'keyResult'
+      mode.type === 'habit' &&
+      mode.link.scope === 'milestone'
     ) {
       setItemLinked(true);
     }
   };
 
+  const handleTypeSelected = (type: 'goal' | 'milestone' | 'habit') => {
+    setTypeMenuVisible(false);
+
+    if (type === 'goal') {
+      openCreateForm({ type: 'goal', action: 'create' });
+      return;
+    }
+
+    setLinkPickerType(type);
+  };
+
+  const handleLinkSelected = (link: ItemLinkContext) => {
+    if (!linkPickerType) {
+      return;
+    }
+
+    if (linkPickerType === 'milestone') {
+      if (link.scope !== 'goal') {
+        return;
+      }
+      openCreateForm({
+        type: 'milestone',
+        action: 'create',
+        goalId: link.goalId,
+      });
+      return;
+    }
+
+    openCreateForm({
+      type: 'habit',
+      action: 'create',
+      link,
+    });
+  };
+
+  const linkPickerOptions = useMemo(() => {
+    if (!linkPickerType) {
+      return [] as { label: string; onPress: () => void }[];
+    }
+
+    const options: { label: string; onPress: () => void }[] = [];
+
+    if (linkPickerType === 'habit') {
+      options.push({
+        label: 'Standalone / No Link',
+        onPress: () => handleLinkSelected({ scope: 'standalone' }),
+      });
+    }
+
+    for (const goal of visibleGoals) {
+      options.push({
+        label: `Goal: ${goal.title}`,
+        onPress: () =>
+          handleLinkSelected({
+            scope: 'goal',
+            goalId: goal.id,
+          }),
+      });
+    }
+
+    if (linkPickerType === 'habit') {
+      for (const milestone of activeMilestones) {
+        const parent = visibleGoals.find(
+          (goal) => goal.id === milestone.goalId,
+        );
+        options.push({
+          label: `Milestone: ${milestone.title}${
+            parent ? ` (${parent.title})` : ''
+          }`,
+          onPress: () =>
+            handleLinkSelected({
+              scope: 'milestone',
+              milestoneId: milestone.id,
+            }),
+        });
+      }
+    }
+
+    return options;
+  }, [linkPickerType, visibleGoals, activeMilestones]);
+
   const openEditForm = (mode: FormMode) => {
-    const values = populateFormFromItem(
-      mode,
-      objectives,
-      keyResults,
-      dailyHabits,
-      keyActivities,
-    );
+    const values = populateFormFromItem(mode, goals, milestones, habits);
     setFormMode(mode);
-    setTitle(values.title);
-    setAffirmation(values.affirmation);
-    setTargetNumber(values.targetNumber);
-    setUnit(values.unit);
-    setStartDate(values.startDate);
-    setEndDate(values.endDate);
-    setScheduledDays(values.scheduledDays);
-    setItemLinked(values.itemLinked);
+    applyFormValues(values);
   };
 
   const toggleScheduledDay = (day: Weekday) => {
@@ -434,17 +704,28 @@ export default function GoalsScreen() {
     );
   };
 
-  const toggleObjective = (objectiveId: string) => {
-    setExpandedObjectiveId((current) =>
-      current === objectiveId ? null : objectiveId,
-    );
-    setExpandedKeyResultId(null);
+  const toggleGoal = (goalId: string) => {
+    setExpandedGoalIds((current) => {
+      const next = new Set(current);
+      if (next.has(goalId)) {
+        next.delete(goalId);
+      } else {
+        next.add(goalId);
+      }
+      return next;
+    });
   };
 
-  const toggleKeyResult = (keyResultId: string) => {
-    setExpandedKeyResultId((current) =>
-      current === keyResultId ? null : keyResultId,
-    );
+  const toggleMilestone = (milestoneId: string) => {
+    setExpandedMilestoneIds((current) => {
+      const next = new Set(current);
+      if (next.has(milestoneId)) {
+        next.delete(milestoneId);
+      } else {
+        next.add(milestoneId);
+      }
+      return next;
+    });
   };
 
   const applySave = () => {
@@ -454,157 +735,162 @@ export default function GoalsScreen() {
 
     const trimmedStart = startDate.trim();
     const trimmedEnd = endDate.trim();
+    const trimmedTitle = title.trim();
+    const optionalTarget = parseOptionalTarget(target);
+    const optionalUnit = unit.trim() || undefined;
+    const optionalPeriod: TargetPeriod | undefined =
+      optionalTarget != null ? period : undefined;
+    const optionalCategory = category || undefined;
 
-    if (formMode.type === 'objective') {
+    if (formMode.type === 'goal') {
       if (!trimmedStart || !trimmedEnd) {
         return;
       }
 
-      const trimmedTitle = title.trim();
       if (formMode.action === 'create') {
-        const newObjective: Objective = {
-          id: createId('objective'),
+        const maxOrder = goals.reduce(
+          (max, goal) => Math.max(max, goal.sortOrder ?? -1),
+          -1,
+        );
+        const newGoal: Goal = {
+          id: createId('goal'),
           title: trimmedTitle,
+          sortOrder: maxOrder + 1,
           createdDate: todayDateString(),
           startDate: trimmedStart,
           endDate: trimmedEnd,
-          affirmation:
-            affirmation.trim() || `I am achieving: ${trimmedTitle}`,
+          category: optionalCategory,
+          target: optionalTarget,
+          unit: optionalUnit,
+          period: optionalPeriod,
+          status: 'active',
         };
-        setObjectives((current) => [...current, newObjective]);
-        setExpandedObjectiveId(newObjective.id);
-        setExpandedKeyResultId(null);
+        setGoals((current) => [...current, newGoal]);
+        setExpandedGoalIds((current) => new Set(current).add(newGoal.id));
       } else {
-        setObjectives((current) =>
-          current.map((objective) =>
-            objective.id === formMode.id
+        setGoals((current) =>
+          current.map((goal) =>
+            goal.id === formMode.id
               ? {
-                  ...objective,
+                  ...goal,
                   title: trimmedTitle,
                   startDate: trimmedStart,
                   endDate: trimmedEnd,
-                  affirmation:
-                    affirmation.trim() || `I am achieving: ${trimmedTitle}`,
+                  category: optionalCategory,
+                  target: optionalTarget,
+                  unit: optionalUnit,
+                  period: optionalPeriod,
+                  status: itemStatus,
                 }
-              : objective,
+              : goal,
           ),
         );
       }
     }
 
-    if (formMode.type === 'keyResult') {
-      const parsedTarget = Number(targetNumber);
-      if (
-        !Number.isFinite(parsedTarget) ||
-        !unit.trim() ||
-        !trimmedStart ||
-        !trimmedEnd
-      ) {
-        return;
-      }
+    if (formMode.type === 'milestone') {
+      const optionalStart = trimmedStart || undefined;
+      const optionalEnd = trimmedEnd || undefined;
 
       if (formMode.action === 'create') {
-        const newKeyResult: KeyResult = {
-          id: createId('key-result'),
-          objectiveId: formMode.objectiveId,
-          title: title.trim(),
-          targetNumber: parsedTarget,
-          unit: unit.trim(),
-          startDate: trimmedStart,
-          endDate: trimmedEnd,
-          currentProgress: 0,
-          status: 'in_progress',
+        const siblings = milestones.filter(
+          (item) =>
+            item.goalId === formMode.goalId && !item.deletedAt,
+        );
+        const maxOrder = siblings.reduce(
+          (max, item) => Math.max(max, item.sortOrder),
+          -1,
+        );
+        const newMilestone: Milestone = {
+          id: createId('milestone'),
+          goalId: formMode.goalId,
+          title: trimmedTitle,
+          sortOrder: maxOrder + 1,
+          target: optionalTarget,
+          unit: optionalUnit,
+          period: optionalPeriod,
+          startDate: optionalStart,
+          endDate: optionalEnd,
+          category: optionalCategory,
+          status: 'active',
           createdDate: todayDateString(),
         };
-        setKeyResults((current) => [...current, newKeyResult]);
-        setExpandedKeyResultId(newKeyResult.id);
+        setMilestones((current) => [...current, newMilestone]);
+        setExpandedMilestoneIds((current) =>
+          new Set(current).add(newMilestone.id),
+        );
       } else {
-        setKeyResults((current) =>
-          current.map((keyResult) =>
-            keyResult.id === formMode.id
+        setMilestones((current) =>
+          current.map((milestone) =>
+            milestone.id === formMode.id
               ? {
-                  ...keyResult,
-                  title: title.trim(),
-                  targetNumber: parsedTarget,
-                  unit: unit.trim(),
-                  startDate: trimmedStart,
-                  endDate: trimmedEnd,
+                  ...milestone,
+                  title: trimmedTitle,
+                  target: optionalTarget,
+                  unit: optionalUnit,
+                  period: optionalPeriod,
+                  startDate: optionalStart,
+                  endDate: optionalEnd,
+                  category: optionalCategory,
+                  status: itemStatus,
                 }
-              : keyResult,
+              : milestone,
           ),
         );
       }
     }
 
-    if (formMode.type === 'dailyHabit') {
+    if (formMode.type === 'habit') {
       if (!trimmedStart || !trimmedEnd) {
         return;
       }
+
+      const orderedDays = WEEKDAYS.filter((day) =>
+        scheduledDays.includes(day),
+      );
 
       if (formMode.action === 'create') {
         const link = resolveItemLink(formMode.link, itemLinked);
         const created = todayDateString();
-        const newHabit: DailyHabit = {
-          id: createId('daily-habit'),
-          title: title.trim(),
+        const siblings = habits.filter(
+          (habit) =>
+            !habit.deletedAt &&
+            habit.linkedGoalId === link.linkedGoalId &&
+            habit.linkedGoalType === link.linkedGoalType,
+        );
+        const maxOrder = siblings.reduce(
+          (max, habit) => Math.max(max, habit.sortOrder ?? -1),
+          -1,
+        );
+        const newHabit: Habit = {
+          id: createId('habit'),
+          title: trimmedTitle,
+          sortOrder: maxOrder + 1,
+          scheduledDays: orderedDays,
+          weeklyTarget: orderedDays.length,
           ...link,
           streakCount: 0,
           completionLog: [],
           createdDate: created,
           startDate: trimmedStart,
           endDate: trimmedEnd,
+          status: 'active',
         };
-        setDailyHabits((current) => [...current, newHabit]);
+        setHabits((current) => [...current, newHabit]);
       } else {
-        setDailyHabits((current) =>
+        setHabits((current) =>
           current.map((habit) =>
             habit.id === formMode.id
               ? {
                   ...habit,
-                  title: title.trim(),
+                  title: trimmedTitle,
+                  scheduledDays: orderedDays,
+                  weeklyTarget: orderedDays.length,
                   startDate: trimmedStart,
                   endDate: trimmedEnd,
+                  status: itemStatus,
                 }
               : habit,
-          ),
-        );
-      }
-    }
-
-    if (formMode.type === 'keyActivity') {
-      if (scheduledDays.length === 0 || !trimmedStart || !trimmedEnd) {
-        return;
-      }
-
-      if (formMode.action === 'create') {
-        const link = resolveItemLink(formMode.link, itemLinked);
-        const created = todayDateString();
-        const newActivity: KeyActivity = {
-          id: createId('key-activity'),
-          title: title.trim(),
-          cadence: 'weekly',
-          weeklyTarget: scheduledDays.length,
-          scheduledDays: [...scheduledDays],
-          ...link,
-          completionLog: [],
-          createdDate: created,
-          startDate: trimmedStart,
-          endDate: trimmedEnd,
-        };
-        setKeyActivities((current) => [...current, newActivity]);
-      } else {
-        setKeyActivities((current) =>
-          current.map((activity) =>
-            activity.id === formMode.id
-              ? {
-                  ...activity,
-                  title: title.trim(),
-                  scheduledDays: [...scheduledDays],
-                  weeklyTarget: scheduledDays.length,
-                  startDate: trimmedStart,
-                  endDate: trimmedEnd,
-                }
-              : activity,
           ),
         );
       }
@@ -620,24 +906,19 @@ export default function GoalsScreen() {
 
     const trimmedStart = startDate.trim();
     const trimmedEnd = endDate.trim();
-    if (!trimmedStart || !trimmedEnd) {
+    const datesOptional = formMode.type === 'milestone';
+    if (!datesOptional && (!trimmedStart || !trimmedEnd)) {
       return;
     }
 
-    if (
-      formMode.action === 'edit' &&
-      (formMode.type === 'dailyHabit' || formMode.type === 'keyActivity')
-    ) {
-      const existing =
-        formMode.type === 'dailyHabit'
-          ? dailyHabits.find((item) => item.id === formMode.id)
-          : keyActivities.find((item) => item.id === formMode.id);
+    if (formMode.action === 'edit' && formMode.type === 'habit') {
+      const existing = habits.find((item) => item.id === formMode.id);
 
       if (existing) {
         const conflicts = detectDateRangeConflicts(
           existing.completionLog,
-          existing.startDate,
-          existing.endDate,
+          existing.startDate ?? existing.createdDate,
+          existing.endDate ?? trimmedEnd,
           trimmedStart,
           trimmedEnd,
         );
@@ -666,68 +947,48 @@ export default function GoalsScreen() {
 
     const values = populateFormFromItem(
       formMode,
-      objectives,
-      keyResults,
-      dailyHabits,
-      keyActivities,
+      goals,
+      milestones,
+      habits,
     );
     setStartDate(values.startDate);
     setEndDate(values.endDate);
     setDateConflictPrompt(null);
   };
 
-  const promptDeleteHabit = (habit: DailyHabit) => {
+  const promptDeleteHabit = (habit: Habit) => {
     setDeletePrompt({
-      kind: 'dailyHabit',
+      kind: 'habit',
       id: habit.id,
       title: habit.title,
     });
   };
 
-  const promptDeleteActivity = (activity: KeyActivity) => {
+  const promptDeleteMilestone = (milestone: Milestone) => {
+    const parentGoal = goals.find((goal) => goal.id === milestone.goalId);
+    setMilestoneKeepChoice('standalone');
     setDeletePrompt({
-      kind: 'keyActivity',
-      id: activity.id,
-      title: activity.title,
+      kind: 'milestone',
+      id: milestone.id,
+      title: milestone.title,
+      dependentCount: countMilestoneDependents(milestone.id, habits),
+      parentGoalTitle: parentGoal?.title ?? 'Goal',
+      parentGoalId: milestone.goalId,
     });
   };
 
-  const promptDeleteKeyResult = (keyResult: KeyResult) => {
-    const parentObjective = objectives.find(
-      (objective) => objective.id === keyResult.objectiveId,
+  const promptDeleteGoal = (goal: Goal) => {
+    const otherGoals = allUndeletedGoals.filter(
+      (item) => item.id !== goal.id && item.status !== 'done',
     );
-    setKeyResultKeepChoice('standalone');
+    setReassignGoalId(otherGoals[0]?.id ?? null);
     setDeletePrompt({
-      kind: 'keyResult',
-      id: keyResult.id,
-      title: keyResult.title,
-      dependentCount: countKeyResultDependents(
-        keyResult.id,
-        dailyHabits,
-        keyActivities,
-      ),
-      parentObjectiveTitle: parentObjective?.title ?? 'Objective',
-      parentObjectiveId: keyResult.objectiveId,
-    });
-  };
-
-  const promptDeleteObjective = (objective: Objective) => {
-    const otherObjectives = activeObjectives.filter(
-      (item) => item.id !== objective.id,
-    );
-    setReassignObjectiveId(otherObjectives[0]?.id ?? null);
-    setDeletePrompt({
-      kind: 'objective',
-      id: objective.id,
-      title: objective.title,
-      dependentCount: countObjectiveDependents(
-        objective.id,
-        keyResults,
-        dailyHabits,
-        keyActivities,
-      ),
-      keyResultCount: keyResultsForObjective(keyResults, objective.id).length,
-      otherObjectives,
+      kind: 'goal',
+      id: goal.id,
+      title: goal.title,
+      dependentCount: countGoalDependents(goal.id, milestones, habits),
+      milestoneCount: milestonesForGoal(milestones, goal.id).length,
+      otherGoals,
     });
   };
 
@@ -736,28 +997,26 @@ export default function GoalsScreen() {
       return;
     }
 
-    if (deletePrompt.kind === 'dailyHabit') {
-      softDeleteDailyHabit(deletePrompt.id);
-    } else if (deletePrompt.kind === 'keyActivity') {
-      softDeleteKeyActivity(deletePrompt.id);
-    } else if (deletePrompt.kind === 'keyResult') {
+    if (deletePrompt.kind === 'habit') {
+      softDeleteHabit(deletePrompt.id);
+    } else if (deletePrompt.kind === 'milestone') {
       if (cascade) {
-        softDeleteKeyResult(deletePrompt.id, true);
+        softDeleteMilestone(deletePrompt.id, true);
       } else {
-        softDeleteKeyResult(
+        softDeleteMilestone(
           deletePrompt.id,
           false,
-          keyResultKeepChoice === 'relinkObjective',
+          milestoneKeepChoice === 'relinkGoal',
         );
       }
-    } else if (deletePrompt.kind === 'objective') {
+    } else if (deletePrompt.kind === 'goal') {
       if (cascade) {
-        softDeleteObjective(deletePrompt.id, true);
+        softDeleteGoal(deletePrompt.id, true);
       } else {
-        softDeleteObjective(
+        softDeleteGoal(
           deletePrompt.id,
           false,
-          reassignObjectiveId ?? undefined,
+          reassignGoalId ?? undefined,
         );
       }
     }
@@ -770,12 +1029,10 @@ export default function GoalsScreen() {
       return;
     }
 
-    if (movePrompt.kind === 'dailyHabit') {
-      moveDailyHabit(movePrompt.id, target);
-    } else if (movePrompt.kind === 'keyActivity') {
-      moveKeyActivity(movePrompt.id, target);
-    } else if (movePrompt.kind === 'keyResult' && target.scope === 'objective') {
-      moveKeyResult(movePrompt.id, target.objectiveId);
+    if (movePrompt.kind === 'habit') {
+      moveHabit(movePrompt.id, target);
+    } else if (movePrompt.kind === 'milestone' && target.scope === 'goal') {
+      moveMilestone(movePrompt.id, target.goalId);
     }
 
     setMovePrompt(null);
@@ -783,44 +1040,86 @@ export default function GoalsScreen() {
 
   const formTitle = getFormTitle(formMode);
   const isEdit = formMode?.action === 'edit';
+  const canAddChildFromEdit =
+    isEdit &&
+    (formMode?.type === 'goal' || formMode?.type === 'milestone');
 
   const linkHint =
-    formMode?.action === 'create' &&
-    (formMode.type === 'dailyHabit' || formMode.type === 'keyActivity')
-      ? formMode.link.scope === 'objective'
-        ? 'Will link to this Objective'
-        : formMode.link.scope === 'keyResult'
+    formMode?.action === 'create' && formMode.type === 'habit'
+      ? formMode.link.scope === 'goal'
+        ? 'Will link to this Goal'
+        : formMode.link.scope === 'milestone'
           ? itemLinked
-            ? 'Will link to this Key Result'
+            ? 'Will link to this Milestone'
             : 'Will be standalone'
           : 'Will be standalone'
       : null;
 
   const canSubmit =
     title.trim().length > 0 &&
-    startDate.trim().length > 0 &&
-    endDate.trim().length > 0 &&
-    (formMode?.type === 'objective'
+    (formMode?.type === 'milestone'
       ? true
-      : formMode?.type === 'keyResult'
-        ? Number.isFinite(Number(targetNumber)) && unit.trim().length > 0
-        : formMode?.type === 'keyActivity'
-          ? scheduledDays.length > 0
-          : formMode?.type === 'dailyHabit');
+      : startDate.trim().length > 0 && endDate.trim().length > 0);
+
+  const handleFormAddChild = () => {
+    if (!formMode || formMode.action !== 'edit' || !canSubmit) {
+      return;
+    }
+    if (formMode.type !== 'goal' && formMode.type !== 'milestone') {
+      return;
+    }
+
+    const parentType = formMode.type;
+    const parentId = formMode.id;
+    applySave();
+    setChildTypeMenu({ parentType, parentId });
+  };
+
+  const handleChildTypeSelected = (childType: 'milestone' | 'habit') => {
+    if (!childTypeMenu) {
+      return;
+    }
+
+    const { parentType, parentId } = childTypeMenu;
+    setChildTypeMenu(null);
+
+    if (parentType === 'goal') {
+      if (childType === 'milestone') {
+        openCreateForm({
+          type: 'milestone',
+          action: 'create',
+          goalId: parentId,
+        });
+        return;
+      }
+      openCreateForm({
+        type: 'habit',
+        action: 'create',
+        link: { scope: 'goal', goalId: parentId },
+      });
+      return;
+    }
+
+    openCreateForm({
+      type: 'habit',
+      action: 'create',
+      link: { scope: 'milestone', milestoneId: parentId },
+    });
+  };
 
   const moveOptions = useMemo(() => {
     if (!movePrompt) {
       return [];
     }
 
-    if (movePrompt.kind === 'keyResult') {
-      return activeObjectives
-        .filter((objective) => objective.id !== movePrompt.currentObjectiveId)
-        .map((objective) => ({
-          label: objective.title,
+    if (movePrompt.kind === 'milestone') {
+      return visibleGoals
+        .filter((goal) => goal.id !== movePrompt.currentGoalId)
+        .map((goal) => ({
+          label: goal.title,
           target: {
-            scope: 'objective' as const,
-            objectiveId: objective.id,
+            scope: 'goal' as const,
+            goalId: goal.id,
           },
         }));
     }
@@ -829,64 +1128,51 @@ export default function GoalsScreen() {
       { label: 'Standalone', target: { scope: 'standalone' } },
     ];
 
-    for (const objective of activeObjectives) {
+    for (const goal of visibleGoals) {
       options.push({
-        label: `Objective: ${objective.title}`,
-        target: { scope: 'objective', objectiveId: objective.id },
+        label: `Goal: ${goal.title}`,
+        target: { scope: 'goal', goalId: goal.id },
       });
     }
 
-    for (const keyResult of activeKeyResults) {
-      const parent = activeObjectives.find(
-        (objective) => objective.id === keyResult.objectiveId,
+    for (const milestone of activeMilestones) {
+      const parent = visibleGoals.find(
+        (goal) => goal.id === milestone.goalId,
       );
       options.push({
-        label: `Key Result: ${keyResult.title}${parent ? ` (${parent.title})` : ''}`,
-        target: { scope: 'keyResult', keyResultId: keyResult.id },
+        label: `Milestone: ${milestone.title}${
+          parent ? ` (${parent.title})` : ''
+        }`,
+        target: { scope: 'milestone', milestoneId: milestone.id },
       });
     }
 
     return options;
-  }, [movePrompt, activeObjectives, activeKeyResults]);
+  }, [movePrompt, visibleGoals, activeMilestones]);
 
   return (
     <>
-      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-        <Text style={styles.screenTitle}>Goals</Text>
-
-        <AddButton
-          label="+ Add Objective"
-          onPress={() => openCreateForm({ type: 'objective', action: 'create' })}
-        />
-
-        <View style={styles.topLevelAddRow}>
-          <AddButton
-            label="+ Add Daily Habit"
-            onPress={() =>
-              openCreateForm({
-                type: 'dailyHabit',
-                action: 'create',
-                link: { scope: 'standalone' },
-              })
-            }
-            small
-          />
-          <AddButton
-            label="+ Add Key Activity"
-            onPress={() =>
-              openCreateForm({
-                type: 'keyActivity',
-                action: 'create',
-                link: { scope: 'standalone' },
-              })
-            }
-            small
-          />
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={styles.content}
+      >
+        <View style={styles.goalsTitleRow}>
+          <Text style={styles.screenTitle}>Goals</Text>
+          <Pressable
+            onPress={() => setTypeMenuVisible(true)}
+            style={({ pressed }) => [
+              styles.addIconButton,
+              pressed && styles.pressed,
+            ]}
+            accessibilityLabel="Add item"
+          >
+            <Ionicons name="add" size={36} color="#111" />
+          </Pressable>
         </View>
 
-        {(standaloneHabits.length > 0 || standaloneActivities.length > 0) && (
+        {standaloneHabits.length > 0 ? (
           <View style={styles.standaloneSection}>
-            <Text style={styles.standaloneTitle}>Standalone Items</Text>
+            <Text style={styles.standaloneTitle}>Standalone Habits</Text>
             <View style={styles.subList}>
               {standaloneHabits.map((habit) => (
                 <HabitListItem
@@ -894,14 +1180,14 @@ export default function GoalsScreen() {
                   habit={habit}
                   onEdit={() =>
                     openEditForm({
-                      type: 'dailyHabit',
+                      type: 'habit',
                       action: 'edit',
                       id: habit.id,
                     })
                   }
                   onMove={() =>
                     setMovePrompt({
-                      kind: 'dailyHabit',
+                      kind: 'habit',
                       id: habit.id,
                       title: habit.title,
                     })
@@ -909,264 +1195,290 @@ export default function GoalsScreen() {
                   onDelete={() => promptDeleteHabit(habit)}
                 />
               ))}
-              {standaloneActivities.map((activity) => (
-                <ActivityListItem
-                  key={activity.id}
-                  activity={activity}
-                  onEdit={() =>
-                    openEditForm({
-                      type: 'keyActivity',
-                      action: 'edit',
-                      id: activity.id,
-                    })
-                  }
-                  onMove={() =>
-                    setMovePrompt({
-                      kind: 'keyActivity',
-                      id: activity.id,
-                      title: activity.title,
-                    })
-                  }
-                  onDelete={() => promptDeleteActivity(activity)}
-                />
-              ))}
             </View>
           </View>
-        )}
+        ) : null}
 
-        {activeObjectives.map((objective) => {
-          const isObjectiveExpanded = expandedObjectiveId === objective.id;
-          const objectiveKeyResults = keyResultsForObjective(
-            keyResults,
-            objective.id,
-          );
-          const objectiveHabits = linkedHabitsForObjective(
-            dailyHabits,
-            objective.id,
-          );
-          const objectiveActivities = linkedActivitiesForObjective(
-            keyActivities,
-            objective.id,
-          );
+        {visibleGoals.map((goal) => {
+          const isGoalExpanded = expandedGoalIds.has(goal.id);
+          const goalMilestones = milestonesForGoal(milestones, goal.id);
+          const goalHabits = linkedHabitsForGoal(habits, goal.id);
 
           return (
-            <View key={objective.id} style={styles.card}>
+            <View key={goal.id} style={styles.card}>
               <SwipeableRow
                 onEdit={() =>
                   openEditForm({
-                    type: 'objective',
+                    type: 'goal',
                     action: 'edit',
-                    id: objective.id,
+                    id: goal.id,
                   })
                 }
-                onDelete={() => promptDeleteObjective(objective)}
+                onDelete={() => promptDeleteGoal(goal)}
               >
-                <Pressable
-                  onPress={() => toggleObjective(objective.id)}
-                  style={({ pressed }) => [
-                    styles.cardHeader,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <Text style={styles.objectiveTitle}>{objective.title}</Text>
-                <Text style={styles.objectiveDate}>
-                  {formatDate(objective.startDate)} –{' '}
-                  {formatDate(objective.endDate)}
-                </Text>
-                </Pressable>
+                <View style={styles.cardHeader}>
+                  <Pressable
+                    onPress={() =>
+                      openEditForm({
+                        type: 'goal',
+                        action: 'edit',
+                        id: goal.id,
+                      })
+                    }
+                    style={({ pressed }) => [pressed && styles.pressed]}
+                  >
+                    <Text
+                      style={[
+                        styles.goalTitle,
+                        goal.status === 'done' && styles.titleDone,
+                      ]}
+                    >
+                      {goal.title}
+                    </Text>
+                  </Pressable>
+                  {formatTargetLabel(goal) ? (
+                    <Text style={styles.goalTarget}>
+                      {formatTargetLabel(goal)}
+                    </Text>
+                  ) : null}
+                  <View style={styles.dateExpandRow}>
+                    <Text style={styles.goalDate}>
+                      {formatDate(goal.startDate)} –{' '}
+                      {formatDate(goal.endDate)}
+                    </Text>
+                    <Pressable
+                      onPress={() => toggleGoal(goal.id)}
+                      hitSlop={8}
+                      style={({ pressed }) => [
+                        styles.expandButton,
+                        pressed && styles.pressed,
+                      ]}
+                      accessibilityLabel={
+                        isGoalExpanded ? 'Collapse' : 'Expand'
+                      }
+                    >
+                      <Ionicons
+                        name={
+                          isGoalExpanded ? 'chevron-up' : 'chevron-down'
+                        }
+                        size={22}
+                        color="#666"
+                      />
+                    </Pressable>
+                  </View>
+                </View>
               </SwipeableRow>
 
-              {isObjectiveExpanded && (
-                <View style={styles.keyResultList}>
-                  <View style={styles.objectiveLinkedSection}>
-                    <Text style={styles.subListLabel}>
-                      Daily Habits (Objective)
-                    </Text>
+              {isGoalExpanded ? (
+                <View style={styles.childList}>
+                  {goalHabits.length > 0 ? (
                     <View style={styles.subList}>
-                      {objectiveHabits.length > 0 ? (
-                        objectiveHabits.map((habit) => (
-                          <HabitListItem
-                            key={habit.id}
-                            habit={habit}
-                            onEdit={() =>
-                              openEditForm({
-                                type: 'dailyHabit',
-                                action: 'edit',
-                                id: habit.id,
-                              })
-                            }
-                            onMove={() =>
-                              setMovePrompt({
-                                kind: 'dailyHabit',
-                                id: habit.id,
-                                title: habit.title,
-                              })
-                            }
-                            onDelete={() => promptDeleteHabit(habit)}
-                          />
-                        ))
-                      ) : (
-                        <Text style={styles.subListEmpty}>None</Text>
-                      )}
+                      {goalHabits.map((habit) => (
+                        <HabitListItem
+                          key={habit.id}
+                          habit={habit}
+                          onEdit={() =>
+                            openEditForm({
+                              type: 'habit',
+                              action: 'edit',
+                              id: habit.id,
+                            })
+                          }
+                          onMove={() =>
+                            setMovePrompt({
+                              kind: 'habit',
+                              id: habit.id,
+                              title: habit.title,
+                            })
+                          }
+                          onDelete={() => promptDeleteHabit(habit)}
+                        />
+                      ))}
                     </View>
+                  ) : null}
 
-                    <Text style={styles.subListLabel}>
-                      Key Activities (Objective)
-                    </Text>
-                    <View style={styles.subList}>
-                      {objectiveActivities.length > 0 ? (
-                        objectiveActivities.map((activity) => (
-                          <ActivityListItem
-                            key={activity.id}
-                            activity={activity}
-                            onEdit={() =>
-                              openEditForm({
-                                type: 'keyActivity',
-                                action: 'edit',
-                                id: activity.id,
-                              })
-                            }
-                            onMove={() =>
-                              setMovePrompt({
-                                kind: 'keyActivity',
-                                id: activity.id,
-                                title: activity.title,
-                              })
-                            }
-                            onDelete={() => promptDeleteActivity(activity)}
-                          />
-                        ))
-                      ) : (
-                        <Text style={styles.subListEmpty}>None</Text>
-                      )}
-                    </View>
-
-                    <View style={styles.inlineAddButtons}>
-                      <AddButton
-                        label="+ Add Daily Habit"
-                        onPress={() =>
-                          openCreateForm({
-                            type: 'dailyHabit',
-                            action: 'create',
-                            link: {
-                              scope: 'objective',
-                              objectiveId: objective.id,
-                            },
-                          })
-                        }
-                        small
-                      />
-                      <AddButton
-                        label="+ Add Key Activity"
-                        onPress={() =>
-                          openCreateForm({
-                            type: 'keyActivity',
-                            action: 'create',
-                            link: {
-                              scope: 'objective',
-                              objectiveId: objective.id,
-                            },
-                          })
-                        }
-                        small
-                      />
-                    </View>
-                  </View>
-
-                  {objectiveKeyResults.map((keyResult) => (
-                    <KeyResultRow
-                      key={keyResult.id}
-                      keyResult={keyResult}
-                      dailyHabits={dailyHabits}
-                      keyActivities={keyActivities}
-                      isExpanded={expandedKeyResultId === keyResult.id}
-                      onToggle={() => toggleKeyResult(keyResult.id)}
+                  {goalMilestones.map((milestone) => (
+                    <MilestoneRow
+                      key={milestone.id}
+                      milestone={milestone}
+                      habits={habits}
+                      isExpanded={expandedMilestoneIds.has(milestone.id)}
+                      onToggleExpand={() => toggleMilestone(milestone.id)}
                       onEdit={() =>
                         openEditForm({
-                          type: 'keyResult',
+                          type: 'milestone',
                           action: 'edit',
-                          id: keyResult.id,
+                          id: milestone.id,
                         })
                       }
                       onMove={() =>
                         setMovePrompt({
-                          kind: 'keyResult',
-                          id: keyResult.id,
-                          title: keyResult.title,
-                          currentObjectiveId: keyResult.objectiveId,
+                          kind: 'milestone',
+                          id: milestone.id,
+                          title: milestone.title,
+                          currentGoalId: milestone.goalId,
                         })
                       }
-                      onDelete={() => promptDeleteKeyResult(keyResult)}
-                      onAddDailyHabit={() =>
-                        openCreateForm({
-                          type: 'dailyHabit',
-                          action: 'create',
-                          link: {
-                            scope: 'keyResult',
-                            keyResultId: keyResult.id,
-                          },
-                        })
-                      }
-                      onAddKeyActivity={() =>
-                        openCreateForm({
-                          type: 'keyActivity',
-                          action: 'create',
-                          link: {
-                            scope: 'keyResult',
-                            keyResultId: keyResult.id,
-                          },
-                        })
-                      }
+                      onDelete={() => promptDeleteMilestone(milestone)}
                       onEditHabit={(habit) =>
                         openEditForm({
-                          type: 'dailyHabit',
+                          type: 'habit',
                           action: 'edit',
                           id: habit.id,
                         })
                       }
                       onMoveHabit={(habit) =>
                         setMovePrompt({
-                          kind: 'dailyHabit',
+                          kind: 'habit',
                           id: habit.id,
                           title: habit.title,
                         })
                       }
                       onDeleteHabit={promptDeleteHabit}
-                      onEditActivity={(activity) =>
-                        openEditForm({
-                          type: 'keyActivity',
-                          action: 'edit',
-                          id: activity.id,
-                        })
-                      }
-                      onMoveActivity={(activity) =>
-                        setMovePrompt({
-                          kind: 'keyActivity',
-                          id: activity.id,
-                          title: activity.title,
-                        })
-                      }
-                      onDeleteActivity={promptDeleteActivity}
                     />
                   ))}
-
-                  <AddButton
-                    label="+ Add Key Result"
-                    onPress={() =>
-                      openCreateForm({
-                        type: 'keyResult',
-                        action: 'create',
-                        objectiveId: objective.id,
-                      })
-                    }
-                    small
-                  />
                 </View>
-              )}
+              ) : null}
             </View>
           );
         })}
       </ScrollView>
+
+      <Modal
+        visible={typeMenuVisible}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setTypeMenuVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.menuCard}>
+            <Text style={styles.modalTitle}>Add</Text>
+            {(
+              [
+                { label: 'Goal', type: 'goal' as const },
+                { label: 'Milestone', type: 'milestone' as const },
+                { label: 'Habit', type: 'habit' as const },
+              ] as const
+            ).map((option) => (
+              <Pressable
+                key={option.type}
+                onPress={() => handleTypeSelected(option.type)}
+                style={({ pressed }) => [
+                  styles.choiceRow,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.choiceText}>{option.label}</Text>
+              </Pressable>
+            ))}
+            <View style={styles.modalActions}>
+              <Pressable
+                onPress={() => setTypeMenuVisible(false)}
+                style={styles.modalButtonSecondary}
+              >
+                <Text style={styles.modalButtonSecondaryText}>Cancel</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={childTypeMenu !== null}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setChildTypeMenu(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.menuCard}>
+            <Text style={styles.modalTitle}>Add</Text>
+            {childTypeMenu?.parentType === 'goal'
+              ? (
+                  [
+                    { label: 'Milestone', type: 'milestone' as const },
+                    { label: 'Habit', type: 'habit' as const },
+                  ] as const
+                ).map((option) => (
+                  <Pressable
+                    key={option.type}
+                    onPress={() => handleChildTypeSelected(option.type)}
+                    style={({ pressed }) => [
+                      styles.choiceRow,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.choiceText}>{option.label}</Text>
+                  </Pressable>
+                ))
+              : (
+                  [{ label: 'Habit', type: 'habit' as const }] as const
+                ).map((option) => (
+                  <Pressable
+                    key={option.type}
+                    onPress={() => handleChildTypeSelected(option.type)}
+                    style={({ pressed }) => [
+                      styles.choiceRow,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.choiceText}>{option.label}</Text>
+                  </Pressable>
+                ))}
+            <View style={styles.modalActions}>
+              <Pressable
+                onPress={() => setChildTypeMenu(null)}
+                style={styles.modalButtonSecondary}
+              >
+                <Text style={styles.modalButtonSecondaryText}>Cancel</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={linkPickerType !== null}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setLinkPickerType(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>
+              Link this {linkPickerType === 'milestone' ? 'Milestone' : 'Habit'}{' '}
+              to:
+            </Text>
+            {linkPickerType === 'milestone' && visibleGoals.length === 0 ? (
+              <Text style={styles.dialogBody}>
+                Create a Goal first — Milestones must belong to a Goal.
+              </Text>
+            ) : (
+              <ScrollView style={styles.moveList}>
+                {linkPickerOptions.map((option) => (
+                  <Pressable
+                    key={option.label}
+                    onPress={option.onPress}
+                    style={({ pressed }) => [
+                      styles.choiceRow,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.choiceText}>{option.label}</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            )}
+            <View style={styles.modalActions}>
+              <Pressable
+                onPress={() => setLinkPickerType(null)}
+                style={styles.modalButtonSecondary}
+              >
+                <Text style={styles.modalButtonSecondaryText}>Cancel</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         visible={formMode !== null}
@@ -1183,98 +1495,253 @@ export default function GoalsScreen() {
             keyboardShouldPersistTaps="handled"
           >
             <View style={styles.modalCard}>
-              <Text style={styles.modalTitle}>{formTitle}</Text>
+              <View style={styles.formTitleRow}>
+                <Text style={[styles.modalTitle, styles.formTitleText]}>
+                  {formTitle}
+                </Text>
+                {canAddChildFromEdit ? (
+                  <Pressable
+                    onPress={handleFormAddChild}
+                    disabled={!canSubmit}
+                    style={({ pressed }) => [
+                      styles.addIconButton,
+                      !canSubmit && styles.modalButtonDisabled,
+                      pressed && canSubmit && styles.pressed,
+                    ]}
+                    accessibilityLabel="Add child item"
+                  >
+                    <Ionicons name="add" size={28} color="#111" />
+                  </Pressable>
+                ) : null}
+              </View>
 
-              <Text style={styles.fieldLabel}>Title</Text>
-              <TextInput
-                style={styles.input}
-                value={title}
-                onChangeText={setTitle}
-                placeholder="Enter title"
-                autoFocus
-              />
+              {formMode?.type === 'goal' ? (
+                <View style={styles.goalFormFields}>
+                  <FormFieldRow label="Title">
+                    <TextInput
+                      style={styles.formInlineInput}
+                      value={title}
+                      onChangeText={setTitle}
+                      placeholder="Enter title"
+                      autoFocus
+                    />
+                  </FormFieldRow>
 
-              {(formMode?.type === 'objective' ||
-                formMode?.type === 'keyResult' ||
-                formMode?.type === 'dailyHabit' ||
-                formMode?.type === 'keyActivity') && (
-                <>
-                  <Text style={styles.fieldLabel}>Start Date</Text>
-                  <TextInput
-                    style={styles.input}
+                  <FormSelectRow
+                    label="Category"
+                    value={category}
+                    placeholder="Optional"
+                    options={[
+                      { value: '', label: 'None' },
+                      ...GOAL_CATEGORIES.map((entry) => ({
+                        value: entry,
+                        label: entry,
+                      })),
+                    ]}
+                    onChange={(value) =>
+                      setCategory((value as GoalCategory) || '')
+                    }
+                  />
+
+                  <FormFieldRow label="Target">
+                    <TextInput
+                      style={styles.formInlineInput}
+                      value={target}
+                      onChangeText={setTarget}
+                      placeholder="Optional"
+                      keyboardType="numeric"
+                    />
+                  </FormFieldRow>
+
+                  <FormFieldRow label="Unit">
+                    <TextInput
+                      style={styles.formInlineInput}
+                      value={unit}
+                      onChangeText={setUnit}
+                      placeholder="e.g. miles, runs"
+                    />
+                  </FormFieldRow>
+
+                  <FormSelectRow
+                    label="Period"
+                    value={period}
+                    placeholder="None"
+                    options={PERIOD_OPTIONS}
+                    onChange={(value) =>
+                      setPeriod((value as TargetPeriod) || 'None')
+                    }
+                  />
+
+                  <FormDateRow
+                    label="Start"
                     value={startDate}
-                    onChangeText={setStartDate}
-                    placeholder="YYYY-MM-DD"
+                    onChange={setStartDate}
                   />
 
-                  <Text style={styles.fieldLabel}>End Date</Text>
-                  <TextInput
-                    style={styles.input}
+                  <FormDateRow
+                    label="End"
                     value={endDate}
-                    onChangeText={setEndDate}
-                    placeholder="YYYY-MM-DD"
-                  />
-                </>
-              )}
-
-              {formMode?.type === 'objective' && (
-                <>
-                  <Text style={styles.fieldLabel}>Affirmation (optional)</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={affirmation}
-                    onChangeText={setAffirmation}
-                    placeholder="I am a World Cup soccer player"
-                  />
-                </>
-              )}
-
-              {formMode?.type === 'keyResult' && (
-                <>
-                  <Text style={styles.fieldLabel}>Target Number</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={targetNumber}
-                    onChangeText={setTargetNumber}
-                    placeholder="e.g. 10"
-                    keyboardType="numeric"
+                    onChange={setEndDate}
                   />
 
-                  <Text style={styles.fieldLabel}>Unit</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={unit}
-                    onChangeText={setUnit}
-                    placeholder="e.g. goals, miles"
-                  />
-                </>
-              )}
+                  <FormFieldRow label="Status">
+                    <Pressable
+                      onPress={() =>
+                        setItemStatus((current) => cycleGoalStatus(current))
+                      }
+                      style={({ pressed }) => [
+                        styles.statusChip,
+                        itemStatus === 'active' && styles.statusChipActive,
+                        itemStatus === 'done' && styles.statusChipDone,
+                        pressed && styles.pressed,
+                      ]}
+                      accessibilityLabel={`Status ${itemStatus}. Tap to change.`}
+                    >
+                      <Text style={styles.statusChipText}>{itemStatus}</Text>
+                    </Pressable>
+                  </FormFieldRow>
+                </View>
+              ) : null}
 
-              {formMode?.type === 'keyActivity' && (
-                <>
-                  <Text style={styles.fieldLabel}>Scheduled Days</Text>
-                  <Text style={styles.fieldHint}>
-                    Select which days this activity is due. Weekly target:{' '}
-                    {scheduledDays.length}
-                  </Text>
-                  <DayPicker
-                    selectedDays={scheduledDays}
-                    onToggleDay={toggleScheduledDay}
+              {formMode?.type === 'milestone' ? (
+                <View style={styles.goalFormFields}>
+                  <FormFieldRow label="Title">
+                    <TextInput
+                      style={styles.formInlineInput}
+                      value={title}
+                      onChangeText={setTitle}
+                      placeholder="Enter title"
+                      autoFocus
+                    />
+                  </FormFieldRow>
+
+                  <FormSelectRow
+                    label="Category"
+                    value={category}
+                    placeholder="Optional"
+                    options={[
+                      { value: '', label: 'None' },
+                      ...GOAL_CATEGORIES.map((entry) => ({
+                        value: entry,
+                        label: entry,
+                      })),
+                    ]}
+                    onChange={(value) =>
+                      setCategory((value as GoalCategory) || '')
+                    }
                   />
-                </>
-              )}
+
+                  <FormFieldRow label="Target">
+                    <TextInput
+                      style={styles.formInlineInput}
+                      value={target}
+                      onChangeText={setTarget}
+                      placeholder="Optional"
+                      keyboardType="numeric"
+                    />
+                  </FormFieldRow>
+
+                  <FormFieldRow label="Unit">
+                    <TextInput
+                      style={styles.formInlineInput}
+                      value={unit}
+                      onChangeText={setUnit}
+                      placeholder="e.g. miles, runs"
+                    />
+                  </FormFieldRow>
+
+                  <FormSelectRow
+                    label="Period"
+                    value={period}
+                    placeholder="None"
+                    options={PERIOD_OPTIONS}
+                    onChange={(value) =>
+                      setPeriod((value as TargetPeriod) || 'None')
+                    }
+                  />
+
+                  <FormDateRow
+                    label="Start"
+                    value={startDate}
+                    onChange={setStartDate}
+                  />
+
+                  <FormDateRow
+                    label="End"
+                    value={endDate}
+                    onChange={setEndDate}
+                  />
+
+                  <FormFieldRow label="Status">
+                    <Pressable
+                      onPress={() =>
+                        setItemStatus((current) => cycleGoalStatus(current))
+                      }
+                      style={({ pressed }) => [
+                        styles.statusChip,
+                        itemStatus === 'active' && styles.statusChipActive,
+                        itemStatus === 'done' && styles.statusChipDone,
+                        pressed && styles.pressed,
+                      ]}
+                      accessibilityLabel={`Status ${itemStatus}. Tap to change.`}
+                    >
+                      <Text style={styles.statusChipText}>{itemStatus}</Text>
+                    </Pressable>
+                  </FormFieldRow>
+                </View>
+              ) : null}
+
+              {formMode?.type === 'habit' ? (
+                <View style={styles.goalFormFields}>
+                  <FormFieldRow label="Title">
+                    <TextInput
+                      style={styles.formInlineInput}
+                      value={title}
+                      onChangeText={setTitle}
+                      placeholder="Enter title"
+                      autoFocus
+                    />
+                  </FormFieldRow>
+
+                  <View style={styles.formStackedBlock}>
+                    <Text style={styles.formFieldLabel}>Days</Text>
+                    <DayPicker
+                      selectedDays={scheduledDays}
+                      onToggleDay={toggleScheduledDay}
+                    />
+                  </View>
+
+                  <FormFieldRow label="Weekly">
+                    <Text style={styles.formReadOnlyValue}>
+                      {scheduledDays.length} day
+                      {scheduledDays.length === 1 ? '' : 's'}/week
+                    </Text>
+                  </FormFieldRow>
+
+                  <FormDateRow
+                    label="Start"
+                    value={startDate}
+                    onChange={setStartDate}
+                  />
+
+                  <FormDateRow
+                    label="End"
+                    value={endDate}
+                    onChange={setEndDate}
+                  />
+                </View>
+              ) : null}
 
               {linkHint ? (
                 <Text style={styles.linkHint}>{linkHint}</Text>
               ) : null}
 
               {formMode?.action === 'create' &&
-              (formMode.type === 'dailyHabit' ||
-                formMode.type === 'keyActivity') &&
-              formMode.link.scope === 'keyResult' ? (
+              formMode.type === 'habit' &&
+              formMode.link.scope === 'milestone' ? (
                 <View style={styles.switchRow}>
                   <Text style={styles.switchLabel}>
-                    Linked to this Key Result
+                    Linked to this Milestone
                   </Text>
                   <Switch value={itemLinked} onValueChange={setItemLinked} />
                 </View>
@@ -1318,10 +1785,9 @@ export default function GoalsScreen() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            {deletePrompt?.kind === 'dailyHabit' ||
-            deletePrompt?.kind === 'keyActivity' ? (
+            {deletePrompt?.kind === 'habit' ? (
               <>
-                <Text style={styles.modalTitle}>Delete item?</Text>
+                <Text style={styles.modalTitle}>Delete Habit?</Text>
                 <Text style={styles.dialogBody}>
                   Delete {deletePrompt.title}? This cannot be undone.
                 </Text>
@@ -1342,40 +1808,39 @@ export default function GoalsScreen() {
               </>
             ) : null}
 
-            {deletePrompt?.kind === 'keyResult' ? (
+            {deletePrompt?.kind === 'milestone' ? (
               <>
-                <Text style={styles.modalTitle}>Delete Key Result?</Text>
+                <Text style={styles.modalTitle}>Delete Milestone?</Text>
                 {deletePrompt.dependentCount > 0 ? (
                   <>
                     <Text style={styles.dialogBody}>
-                      This Key Result has {deletePrompt.dependentCount} linked
-                      item{deletePrompt.dependentCount === 1 ? '' : 's'}. What
-                      would you like to do with them?
+                      This Milestone has {deletePrompt.dependentCount} linked
+                      habit
+                      {deletePrompt.dependentCount === 1 ? '' : 's'}. What would
+                      you like to do with them?
                     </Text>
                     <Pressable
-                      onPress={() => setKeyResultKeepChoice('standalone')}
+                      onPress={() => setMilestoneKeepChoice('standalone')}
                       style={[
                         styles.choiceRow,
-                        keyResultKeepChoice === 'standalone' &&
+                        milestoneKeepChoice === 'standalone' &&
                           styles.choiceRowSelected,
                       ]}
                     >
                       <Text style={styles.choiceText}>
-                        Keep linked items (make standalone)
+                        Keep linked habits (make standalone)
                       </Text>
                     </Pressable>
                     <Pressable
-                      onPress={() =>
-                        setKeyResultKeepChoice('relinkObjective')
-                      }
+                      onPress={() => setMilestoneKeepChoice('relinkGoal')}
                       style={[
                         styles.choiceRow,
-                        keyResultKeepChoice === 'relinkObjective' &&
+                        milestoneKeepChoice === 'relinkGoal' &&
                           styles.choiceRowSelected,
                       ]}
                     >
                       <Text style={styles.choiceText}>
-                        Re-link to {deletePrompt.parentObjectiveTitle}
+                        Re-link to {deletePrompt.parentGoalTitle}
                       </Text>
                     </Pressable>
                     <Pressable
@@ -1400,7 +1865,7 @@ export default function GoalsScreen() {
                         style={styles.modalButtonPrimary}
                       >
                         <Text style={styles.modalButtonPrimaryText}>
-                          Delete Key Result
+                          Delete Milestone
                         </Text>
                       </Pressable>
                     </View>
@@ -1433,34 +1898,34 @@ export default function GoalsScreen() {
               </>
             ) : null}
 
-            {deletePrompt?.kind === 'objective' ? (
+            {deletePrompt?.kind === 'goal' ? (
               <>
-                <Text style={styles.modalTitle}>Delete Objective?</Text>
+                <Text style={styles.modalTitle}>Delete Goal?</Text>
                 {deletePrompt.dependentCount > 0 ? (
                   <>
                     <Text style={styles.dialogBody}>
-                      This Objective has {deletePrompt.dependentCount} linked
-                      item{deletePrompt.dependentCount === 1 ? '' : 's'}. What
-                      would you like to do with them?
+                      This Goal has {deletePrompt.dependentCount} linked item
+                      {deletePrompt.dependentCount === 1 ? '' : 's'}. What would
+                      you like to do with them?
                     </Text>
-                    {deletePrompt.keyResultCount > 0 &&
-                    deletePrompt.otherObjectives.length > 0 ? (
+                    {deletePrompt.milestoneCount > 0 &&
+                    deletePrompt.otherGoals.length > 0 ? (
                       <>
                         <Text style={styles.fieldLabel}>
-                          Move Key Results to
+                          Move Milestones to
                         </Text>
-                        {deletePrompt.otherObjectives.map((objective) => (
+                        {deletePrompt.otherGoals.map((otherGoal) => (
                           <Pressable
-                            key={objective.id}
-                            onPress={() => setReassignObjectiveId(objective.id)}
+                            key={otherGoal.id}
+                            onPress={() => setReassignGoalId(otherGoal.id)}
                             style={[
                               styles.choiceRow,
-                              reassignObjectiveId === objective.id &&
+                              reassignGoalId === otherGoal.id &&
                                 styles.choiceRowSelected,
                             ]}
                           >
                             <Text style={styles.choiceText}>
-                              {objective.title}
+                              {otherGoal.title}
                             </Text>
                           </Pressable>
                         ))}
@@ -1471,10 +1936,10 @@ export default function GoalsScreen() {
                       style={styles.choiceRow}
                     >
                       <Text style={styles.choiceText}>
-                        Keep Daily Habits / Key Activities as standalone
-                        {deletePrompt.keyResultCount > 0 &&
-                        deletePrompt.otherObjectives.length === 0
-                          ? ' (Key Results will also be deleted)'
+                        Keep Habits as standalone
+                        {deletePrompt.milestoneCount > 0 &&
+                        deletePrompt.otherGoals.length === 0
+                          ? ' (Milestones will also be deleted)'
                           : ''}
                       </Text>
                     </Pressable>
@@ -1540,7 +2005,8 @@ export default function GoalsScreen() {
               Move {movePrompt?.title ?? 'item'}
             </Text>
             <Text style={styles.dialogBody}>
-              Select a new {movePrompt?.kind === 'keyResult' ? 'Objective' : 'parent'}:
+              Select a new{' '}
+              {movePrompt?.kind === 'milestone' ? 'Goal' : 'parent'}:
             </Text>
             <ScrollView style={styles.moveList}>
               {moveOptions.map((option) => (
@@ -1612,13 +2078,27 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: '700',
     color: '#111',
+    flex: 1,
+  },
+  goalsTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     marginBottom: 16,
   },
-  topLevelAddRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
+  addIconButton: {
+    padding: 4,
+    marginLeft: 8,
+  },
+  menuCard: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 20,
+    marginHorizontal: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 6,
   },
   standaloneSection: {
     backgroundColor: '#fff',
@@ -1640,30 +2120,6 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
-  addButton: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#007aff',
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    marginBottom: 16,
-  },
-  addButtonSmall: {
-    backgroundColor: '#e8f1ff',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
-  addButtonText: {
-    color: '#fff',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  addButtonTextSmall: {
-    color: '#007aff',
-    fontSize: 13,
-    fontWeight: '600',
-  },
   card: {
     backgroundColor: '#fff',
     borderRadius: 12,
@@ -1678,51 +2134,62 @@ const styles = StyleSheet.create({
   cardHeader: {
     padding: 16,
   },
-  objectiveTitle: {
+  dateExpandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginTop: 4,
+  },
+  expandButton: {
+    padding: 4,
+  },
+  goalTitle: {
     fontSize: 20,
     fontWeight: '700',
     color: '#111',
     marginBottom: 6,
   },
-  objectiveDate: {
+  goalTarget: {
+    fontSize: 13,
+    color: '#666',
+    marginBottom: 4,
+  },
+  goalDate: {
     fontSize: 14,
     color: '#666',
   },
-  keyResultList: {
+  childList: {
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: '#e5e5ea',
     padding: 12,
     gap: 8,
   },
-  objectiveLinkedSection: {
-    backgroundColor: '#f9f9fb',
-    borderRadius: 10,
-    padding: 12,
-    gap: 6,
-    marginBottom: 4,
-  },
-  keyResultCard: {
+  milestoneCard: {
     backgroundColor: '#f9f9fb',
     borderRadius: 10,
     overflow: 'hidden',
   },
-  keyResultHeader: {
+  milestoneHeader: {
     padding: 12,
   },
-  keyResultTitle: {
+  milestoneTitle: {
     fontSize: 16,
     fontWeight: '600',
     color: '#222',
     marginBottom: 4,
   },
-  keyResultProgress: {
+  milestoneProgress: {
     fontSize: 14,
     color: '#555',
   },
-  keyResultDates: {
+  milestoneDates: {
     fontSize: 12,
     color: '#888',
     marginTop: 2,
+  },
+  dateExpandSpacer: {
+    flex: 1,
   },
   linkedSection: {
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -1730,14 +2197,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingBottom: 12,
     gap: 6,
-  },
-  subListLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#888',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginTop: 4,
   },
   subList: {
     gap: 0,
@@ -1757,18 +2216,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#444',
     flex: 1,
-  },
-  subListEmpty: {
-    fontSize: 14,
-    color: '#aaa',
-    fontStyle: 'italic',
-    paddingLeft: 4,
-  },
-  inlineAddButtons: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 8,
   },
   streakBadge: {
     flexDirection: 'row',
@@ -1813,6 +2260,38 @@ const styles = StyleSheet.create({
     color: '#111',
     marginBottom: 16,
   },
+  formTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  formTitleText: {
+    flex: 1,
+    marginBottom: 0,
+  },
+  titleDone: {
+    textDecorationLine: 'line-through',
+  },
+  statusChip: {
+    alignSelf: 'flex-start',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#f0f0f2',
+    marginBottom: 4,
+  },
+  statusChipActive: {
+    backgroundColor: '#e8f1ff',
+  },
+  statusChipDone: {
+    backgroundColor: '#e8e8e8',
+  },
+  statusChipText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+    textTransform: 'lowercase',
+  },
   dialogBody: {
     fontSize: 15,
     color: '#444',
@@ -1825,6 +2304,63 @@ const styles = StyleSheet.create({
     color: '#666',
     marginBottom: 6,
     marginTop: 8,
+  },
+  goalFormFields: {
+    gap: 10,
+    marginTop: 4,
+  },
+  formFieldRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    minHeight: 40,
+  },
+  formFieldLabel: {
+    width: 78,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#666',
+  },
+  formFieldControl: {
+    flex: 1,
+  },
+  formInlineInput: {
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 15,
+    color: '#111',
+    backgroundColor: '#fff',
+  },
+  formSelectButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#fff',
+  },
+  formSelectText: {
+    flex: 1,
+    fontSize: 15,
+    color: '#111',
+  },
+  formSelectPlaceholder: {
+    color: '#aaa',
+  },
+  formStackedBlock: {
+    gap: 8,
+  },
+  formReadOnlyValue: {
+    fontSize: 15,
+    color: '#444',
+    paddingVertical: 10,
   },
   fieldHint: {
     fontSize: 13,

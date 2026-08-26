@@ -1,6 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   FlatList,
   Pressable,
   ScrollView,
@@ -11,21 +13,70 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
-import { useAppData } from '../context/AppDataContext';
+import { getGoals } from '../lib/goalsApi';
+import {
+  addCompletion,
+  getAllActiveHabits,
+  getCompletionsForHabit,
+  removeCompletion,
+  type ActiveHabit,
+} from '../lib/habitsApi';
 import {
   addDays,
   formatDate,
-  isItemActiveOnDate,
   getWeekDays,
   getWeekStart,
   todayDateString,
+  toggleDateInLog,
   WEEKDAY_SHORT_LABELS,
   type WeekDayCell,
 } from '../utils/date';
+import { calculateStreak } from '../utils/streak';
 import {
   buildChecklistSections,
   type ChecklistItem,
 } from '../utils/todayChecklist';
+
+/** Extra days before the visible week so streak badges stay accurate. */
+const COMPLETION_LOOKBACK_DAYS = 90;
+
+function isDatedItemVisible(
+  item: {
+    createdDate: string;
+    startDate?: string;
+    endDate?: string;
+    deletedAt?: string;
+  },
+  dateString: string,
+): boolean {
+  if (item.deletedAt) {
+    return false;
+  }
+  if (dateString < item.createdDate) {
+    return false;
+  }
+  if (item.startDate && dateString < item.startDate) {
+    return false;
+  }
+  if (item.endDate && dateString > item.endDate) {
+    return false;
+  }
+  return true;
+}
+
+function withCompletions(
+  habits: ActiveHabit[],
+  completionsByHabitId: Map<string, string[]>,
+): ActiveHabit[] {
+  return habits.map((habit) => {
+    const completionLog = completionsByHabitId.get(habit.id) ?? [];
+    return {
+      ...habit,
+      completionLog,
+      streakCount: calculateStreak(completionLog),
+    };
+  });
+}
 
 /** Weeks rendered on each side of the initially focused week. */
 const INITIAL_SIDE_WEEKS = 12;
@@ -403,7 +454,8 @@ function ChecklistRow({
           <Text
             style={[
               styles.checklistTitle,
-              item.isComplete && styles.checklistTitleComplete,
+              (item.isComplete || item.isStatusDone) &&
+                styles.checklistTitleComplete,
               item.isPlanned && styles.checklistTitlePlanned,
             ]}
           >
@@ -428,15 +480,6 @@ function getChecklistHeading(selectedDate: string, today: string): string {
 }
 
 export default function TodayScreen() {
-  const {
-    objectives,
-    keyResults,
-    activeDailyHabits,
-    activeKeyActivities,
-    toggleDailyHabitCompletion,
-    toggleKeyActivityCompletion,
-  } = useAppData();
-
   const today = todayDateString();
   const todayWeekStart = getWeekStart(today);
 
@@ -448,63 +491,132 @@ export default function TodayScreen() {
   const [pageIndex, setPageIndex] = useState(INITIAL_SIDE_WEEKS);
   const listRef = useRef<FlatList<string> | null>(null);
 
+  const [habits, setHabits] = useState<ActiveHabit[]>([]);
+  const [headerTitle, setHeaderTitle] = useState('Set a Goal to get started');
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const pendingTogglesRef = useRef<Set<string>>(new Set());
+  const visibleWeekStartRef = useRef(visibleWeekStart);
+  const habitsRef = useRef(habits);
+  visibleWeekStartRef.current = visibleWeekStart;
+  habitsRef.current = habits;
+
+  const loadCompletions = useCallback(
+    async (habitList: ActiveHabit[], weekStart: string) => {
+      const rangeStart = addDays(weekStart, -COMPLETION_LOOKBACK_DAYS);
+      const rangeEnd = addDays(weekStart, 6);
+
+      const results = await Promise.all(
+        habitList.map(async (habit) => {
+          const dates = await getCompletionsForHabit(
+            habit.id,
+            rangeStart,
+            rangeEnd,
+          );
+          return [habit.id, dates] as const;
+        }),
+      );
+
+      return new Map<string, string[]>(results);
+    },
+    [],
+  );
+
+  const loadTodayData = useCallback(
+    async (weekStart: string) => {
+      setLoading(true);
+      setLoadError(null);
+      try {
+        const [nextHabits, goals] = await Promise.all([
+          getAllActiveHabits(),
+          getGoals(),
+        ]);
+
+        const primaryGoal = goals.find(
+          (goal) => !goal.deletedAt && goal.status !== 'done',
+        );
+        setHeaderTitle(primaryGoal?.title ?? 'Set a Goal to get started');
+
+        const completionsByHabitId = await loadCompletions(
+          nextHabits,
+          weekStart,
+        );
+        setHabits(withCompletions(nextHabits, completionsByHabitId));
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Failed to load today.';
+        setLoadError(message);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [loadCompletions],
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadTodayData(visibleWeekStartRef.current);
+    }, [loadTodayData]),
+  );
+
+  const handleVisibleWeekChange = useCallback(
+    (weekStart: string) => {
+      setVisibleWeekStart(weekStart);
+      void (async () => {
+        try {
+          const completionsByHabitId = await loadCompletions(
+            habitsRef.current,
+            weekStart,
+          );
+          setHabits((current) =>
+            withCompletions(current, completionsByHabitId),
+          );
+        } catch (error) {
+          console.warn('Failed to refresh completions for week', error);
+        }
+      })();
+    },
+    [loadCompletions],
+  );
+
   const weekDays = useMemo(
     () => getWeekDays(visibleWeekStart),
     [visibleWeekStart],
   );
   const isViewingCurrentWeek = visibleWeekStart === todayWeekStart;
 
-  const primaryObjective = useMemo(
-    () => objectives.find((objective) => !objective.deletedAt),
-    [objectives],
-  );
-  const affirmation =
-    primaryObjective?.affirmation ??
-    (primaryObjective
-      ? `I am achieving: ${primaryObjective.title}`
-      : 'Set an Objective to see your affirmation');
-
-  const keyResultTitles = useMemo(() => {
+  const milestoneTitles = useMemo(() => {
     const map = new Map<string, string>();
-    for (const keyResult of keyResults) {
-      if (!keyResult.deletedAt && isItemActiveOnDate(keyResult, selectedDate)) {
-        map.set(keyResult.id, keyResult.title);
+    for (const habit of habits) {
+      const milestone = habit.parentMilestone;
+      if (milestone && isDatedItemVisible(milestone, selectedDate)) {
+        map.set(milestone.id, milestone.title);
       }
     }
     return map;
-  }, [keyResults, selectedDate]);
+  }, [habits, selectedDate]);
 
-  const objectiveTitles = useMemo(() => {
+  const goalTitles = useMemo(() => {
     const map = new Map<string, string>();
-    for (const objective of objectives) {
-      if (
-        !objective.deletedAt &&
-        isItemActiveOnDate(objective, selectedDate)
-      ) {
-        map.set(objective.id, objective.title);
+    for (const habit of habits) {
+      const goal = habit.parentGoal;
+      if (goal && isDatedItemVisible(goal, selectedDate)) {
+        map.set(goal.id, goal.title);
       }
     }
     return map;
-  }, [objectives, selectedDate]);
+  }, [habits, selectedDate]);
 
   const sections = useMemo(
     () =>
       buildChecklistSections(
         selectedDate,
-        activeDailyHabits,
-        activeKeyActivities,
-        keyResultTitles,
-        objectiveTitles,
+        habits,
+        milestoneTitles,
+        goalTitles,
         today,
       ),
-    [
-      selectedDate,
-      activeDailyHabits,
-      activeKeyActivities,
-      keyResultTitles,
-      objectiveTitles,
-      today,
-    ],
+    [selectedDate, habits, milestoneTitles, goalTitles, today],
   );
 
   const totalItems = sections.reduce(
@@ -519,8 +631,8 @@ export default function TodayScreen() {
     const index = INITIAL_SIDE_WEEKS;
     setWeekStarts(centered);
     setPageIndex(index);
-    setVisibleWeekStart(todayWeekStart);
     setSelectedDate(today);
+    handleVisibleWeekChange(todayWeekStart);
 
     requestAnimationFrame(() => {
       listRef.current?.scrollToIndex({ index, animated: true });
@@ -528,21 +640,89 @@ export default function TodayScreen() {
   };
 
   const handleToggle = (item: ChecklistItem) => {
-    if (!item.isInteractive) {
+    if (!item.isInteractive || item.type !== 'habit') {
       return;
     }
 
-    if (item.type === 'dailyHabit') {
-      toggleDailyHabitCompletion(item.id, selectedDate);
+    const toggleKey = `${item.id}:${selectedDate}`;
+    if (pendingTogglesRef.current.has(toggleKey)) {
       return;
     }
 
-    toggleKeyActivityCompletion(item.id, selectedDate);
+    const habit = habits.find((entry) => entry.id === item.id);
+    if (!habit) {
+      return;
+    }
+
+    const wasComplete = habit.completionLog.includes(selectedDate);
+    const previousLog = habit.completionLog;
+    const nextLog = toggleDateInLog(previousLog, selectedDate);
+
+    setHabits((current) =>
+      current.map((entry) =>
+        entry.id === item.id
+          ? {
+              ...entry,
+              completionLog: nextLog,
+              streakCount: calculateStreak(nextLog, selectedDate),
+            }
+          : entry,
+      ),
+    );
+
+    pendingTogglesRef.current.add(toggleKey);
+    const persist = wasComplete
+      ? removeCompletion(item.id, selectedDate)
+      : addCompletion(item.id, selectedDate);
+
+    void persist
+      .catch((error) => {
+        console.warn('Failed to toggle habit completion', error);
+        setHabits((current) =>
+          current.map((entry) =>
+            entry.id === item.id
+              ? {
+                  ...entry,
+                  completionLog: previousLog,
+                  streakCount: calculateStreak(previousLog, selectedDate),
+                }
+              : entry,
+          ),
+        );
+      })
+      .finally(() => {
+        pendingTogglesRef.current.delete(toggleKey);
+      });
   };
+
+  if (loading && habits.length === 0) {
+    return (
+      <View style={styles.loadingState}>
+        <ActivityIndicator color="#007aff" />
+      </View>
+    );
+  }
+
+  if (loadError && habits.length === 0) {
+    return (
+      <View style={styles.loadingState}>
+        <Text style={styles.errorText}>{loadError}</Text>
+        <Pressable
+          onPress={() => void loadTodayData(visibleWeekStart)}
+          style={({ pressed }) => [
+            styles.retryButton,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Text style={styles.retryButtonText}>Retry</Text>
+        </Pressable>
+      </View>
+    );
+  }
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.affirmation}>{affirmation}</Text>
+      <Text style={styles.affirmation}>{headerTitle}</Text>
 
       <View style={styles.weekHeader}>
         <Text style={styles.weekLabel}>
@@ -566,7 +746,7 @@ export default function TodayScreen() {
         today={today}
         selectedDate={selectedDate}
         onSelectDate={setSelectedDate}
-        onVisibleWeekChange={setVisibleWeekStart}
+        onVisibleWeekChange={handleVisibleWeekChange}
         listRef={listRef}
         weekStarts={weekStarts}
         setWeekStarts={setWeekStarts}
@@ -581,11 +761,11 @@ export default function TodayScreen() {
           <View key={section.key} style={styles.sectionBlock}>
             <Text style={styles.sectionHeader}>{section.title}</Text>
             <View style={styles.checklistCard}>
-              {section.items.map((item) => (
+              {section.items.map((checklistItem) => (
                 <ChecklistRow
-                  key={`${item.type}-${item.id}`}
-                  item={item}
-                  onToggle={() => handleToggle(item)}
+                  key={`${checklistItem.type}-${checklistItem.id}`}
+                  item={checklistItem}
+                  onToggle={() => handleToggle(checklistItem)}
                 />
               ))}
             </View>
@@ -612,6 +792,30 @@ const styles = StyleSheet.create({
   content: {
     padding: 16,
     paddingBottom: 32,
+  },
+  loadingState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    backgroundColor: '#f4f4f6',
+    padding: 24,
+  },
+  errorText: {
+    fontSize: 15,
+    color: '#c62828',
+    textAlign: 'center',
+  },
+  retryButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#007aff',
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontWeight: '600',
+    fontSize: 14,
   },
   affirmation: {
     fontSize: 26,

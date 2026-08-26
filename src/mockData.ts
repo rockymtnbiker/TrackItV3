@@ -1,79 +1,131 @@
-import type { DailyHabit, KeyActivity, KeyResult, Objective } from './types';
+import type { Goal, Habit, Milestone } from './types';
+import { ALL_WEEKDAYS } from './types';
 
-export const objectives: Objective[] = [
+/**
+ * Migrated mock data. Prior freeform unit "runs/week" re-parsed into
+ * unit: "runs" + period: "Week" (target 3 preserved).
+ */
+export const goals: Goal[] = [
   {
-    id: 'objective-1',
-    title: 'Run a Marathon',
-    createdDate: '2026-01-15',
-    startDate: '2026-01-15',
-    endDate: '2026-11-01',
-    affirmation: 'I am a marathon runner who trains with discipline every day',
-  },
-];
-
-export const keyResults: KeyResult[] = [
-  {
-    id: 'key-result-1',
-    objectiveId: 'objective-1',
-    title: 'Complete training miles',
-    targetNumber: 500,
-    unit: 'miles',
-    startDate: '2026-01-15',
-    endDate: '2026-10-15',
-    currentProgress: 142,
-    status: 'in_progress',
-    createdDate: '2026-01-15',
-  },
-  {
-    id: 'key-result-2',
-    objectiveId: 'objective-1',
-    title: 'Finish race day',
-    targetNumber: 1,
-    unit: 'marathon',
-    startDate: '2026-11-01',
-    endDate: '2026-11-01',
-    currentProgress: 0,
-    status: 'not_started',
-    // Created with the Objective; startDate is still in the future.
-    createdDate: '2026-01-15',
-  },
-];
-
-export const dailyHabits: DailyHabit[] = [
-  {
-    id: 'daily-habit-1',
-    title: 'Morning run',
-    linkedGoalId: 'key-result-1',
-    linkedGoalType: 'keyResult',
-    streakCount: 12,
+    id: 'goal-1',
+    title: 'Run a marathon',
+    sortOrder: 0,
     createdDate: '2026-07-01',
     startDate: '2026-07-01',
-    endDate: '2026-10-15',
-    completionLog: ['2026-07-05', '2026-07-06', '2026-07-07', '2026-07-08'],
+    endDate: '2027-01-01',
+    status: 'active',
   },
   {
-    id: 'daily-habit-2',
-    title: 'Stretch daily',
-    streakCount: 5,
-    createdDate: '2026-07-13',
-    startDate: '2026-07-13',
-    endDate: '2026-11-01',
-    completionLog: ['2026-07-13', '2026-07-14', '2026-07-15', '2026-07-16', '2026-07-17'],
+    id: 'goal-2',
+    title: 'Become Regional Manager',
+    sortOrder: 1,
+    createdDate: '2026-08-01',
+    startDate: '2026-08-01',
+    endDate: '2027-05-01',
+    status: 'active',
   },
 ];
 
-export const keyActivities: KeyActivity[] = [
+export const milestones: Milestone[] = [
   {
-    id: 'key-activity-1',
-    title: 'Long run',
-    cadence: 'weekly',
-    weeklyTarget: 3,
+    id: 'milestone-1',
+    goalId: 'goal-1',
+    title: 'Establish a weekly workout rhythm of 3 runs per week',
+    sortOrder: 0,
+    target: 3,
+    unit: 'runs',
+    period: 'Week',
+    startDate: '2026-08-01',
+    endDate: '2026-08-29',
+    status: 'active',
+    createdDate: '2026-07-01',
+  },
+  {
+    id: 'milestone-ns-1',
+    goalId: 'goal-2',
+    title:
+      'Research the regional manager role — requirements and responsibilities',
+    sortOrder: 0,
+    status: 'active',
+    createdDate: '2026-08-01',
+  },
+  {
+    id: 'milestone-ns-2',
+    goalId: 'goal-2',
+    title: 'Talk to my boss about my interest in the promotion',
+    sortOrder: 1,
+    status: 'active',
+    createdDate: '2026-08-01',
+  },
+  {
+    id: 'milestone-ns-3',
+    goalId: 'goal-2',
+    title: "Complete the 'Financials for Regional Managers' course",
+    sortOrder: 2,
+    status: 'active',
+    createdDate: '2026-08-01',
+  },
+  {
+    id: 'milestone-ns-4',
+    goalId: 'goal-2',
+    title: 'Build relationships with 3 store managers',
+    sortOrder: 3,
+    status: 'active',
+    createdDate: '2026-08-01',
+  },
+];
+
+export const habits: Habit[] = [
+  {
+    id: 'habit-1',
+    title: 'Stretch',
+    sortOrder: 0,
+    linkedGoalId: 'milestone-1',
+    linkedGoalType: 'milestone',
+    scheduledDays: [...ALL_WEEKDAYS],
+    weeklyTarget: 7,
+    streakCount: 6,
+    createdDate: '2026-08-01',
+    startDate: '2026-08-01',
+    endDate: '2026-08-29',
+    status: 'active',
+    completionLog: [
+      '2026-08-09',
+      '2026-08-10',
+      '2026-08-11',
+      '2026-08-12',
+      '2026-08-13',
+      '2026-08-14',
+    ],
+  },
+  {
+    id: 'habit-2',
+    title: 'Run',
+    sortOrder: 1,
+    linkedGoalId: 'milestone-1',
+    linkedGoalType: 'milestone',
     scheduledDays: ['monday', 'wednesday', 'saturday'],
-    linkedGoalId: 'key-result-1',
-    linkedGoalType: 'keyResult',
-    createdDate: '2026-07-01',
-    startDate: '2026-07-01',
-    endDate: '2026-10-15',
-    completionLog: ['2026-07-15', '2026-07-16'],
+    weeklyTarget: 3,
+    streakCount: 0,
+    createdDate: '2026-08-01',
+    startDate: '2026-08-01',
+    endDate: '2026-08-29',
+    status: 'active',
+    completionLog: ['2026-08-10', '2026-08-12'],
+  },
+  {
+    id: 'habit-3',
+    title: 'Reach out to a store manager',
+    sortOrder: 0,
+    linkedGoalId: 'milestone-ns-4',
+    linkedGoalType: 'milestone',
+    scheduledDays: ['friday'],
+    weeklyTarget: 1,
+    streakCount: 0,
+    createdDate: '2026-08-01',
+    startDate: '2026-08-01',
+    endDate: '2027-05-01',
+    status: 'active',
+    completionLog: [],
   },
 ];

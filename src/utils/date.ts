@@ -64,17 +64,22 @@ export function existsOnDate(
 
 /**
  * True when the item is active on dateString:
- * created already, and within its startDate–endDate range.
+ * created already, and within its startDate–endDate range (when set).
  */
 export function isItemActiveOnDate(
-  item: { createdDate: string; startDate: string; endDate: string },
+  item: { createdDate: string; startDate?: string; endDate?: string },
   dateString: string,
 ): boolean {
-  return (
-    dateString >= item.createdDate &&
-    dateString >= item.startDate &&
-    dateString <= item.endDate
-  );
+  if (dateString < item.createdDate) {
+    return false;
+  }
+  if (item.startDate && dateString < item.startDate) {
+    return false;
+  }
+  if (item.endDate && dateString > item.endDate) {
+    return false;
+  }
+  return true;
 }
 
 export type WeekDayCell = {
@@ -120,6 +125,26 @@ export function formatDate(dateString: string): string {
     day: 'numeric',
     year: 'numeric',
   });
+}
+
+/** Display format for form date fields: mm/dd/yyyy. */
+export function formatDateMDY(dateString: string): string {
+  if (!dateString || !/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+    return '';
+  }
+  const [year, month, day] = dateString.split('-');
+  return `${month}/${day}/${year}`;
+}
+
+export function dateFromIso(dateString: string): Date {
+  return new Date(`${dateString}T00:00:00`);
+}
+
+export function isoFromDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 export function toggleDateInLog(log: string[], date: string): string[] {

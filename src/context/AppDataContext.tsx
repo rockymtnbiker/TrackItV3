@@ -6,52 +6,39 @@ import {
   type ReactNode,
 } from 'react';
 import {
-  dailyHabits as initialDailyHabits,
-  keyActivities as initialKeyActivities,
-  keyResults as initialKeyResults,
-  objectives as initialObjectives,
+  goals as initialGoals,
+  habits as initialHabits,
+  milestones as initialMilestones,
 } from '../mockData';
-import type {
-  DailyHabit,
-  KeyActivity,
-  KeyResult,
-  MoveTarget,
-  Objective,
-} from '../types';
+import type { Goal, Habit, LinkedGoalType, Milestone, MoveTarget } from '../types';
 import { filterActive } from '../utils/activeItems';
 import { toggleDateInLog, todayDateString } from '../utils/date';
 import { calculateStreak } from '../utils/streak';
 
 interface AppDataContextValue {
-  objectives: Objective[];
-  keyResults: KeyResult[];
-  dailyHabits: DailyHabit[];
-  keyActivities: KeyActivity[];
-  activeObjectives: Objective[];
-  activeKeyResults: KeyResult[];
-  activeDailyHabits: DailyHabit[];
-  activeKeyActivities: KeyActivity[];
-  setObjectives: React.Dispatch<React.SetStateAction<Objective[]>>;
-  setKeyResults: React.Dispatch<React.SetStateAction<KeyResult[]>>;
-  setDailyHabits: React.Dispatch<React.SetStateAction<DailyHabit[]>>;
-  setKeyActivities: React.Dispatch<React.SetStateAction<KeyActivity[]>>;
-  toggleDailyHabitCompletion: (habitId: string, date: string) => void;
-  toggleKeyActivityCompletion: (activityId: string, date: string) => void;
-  softDeleteObjective: (
-    objectiveId: string,
+  goals: Goal[];
+  milestones: Milestone[];
+  habits: Habit[];
+  activeGoals: Goal[];
+  activeMilestones: Milestone[];
+  activeHabits: Habit[];
+  setGoals: React.Dispatch<React.SetStateAction<Goal[]>>;
+  setMilestones: React.Dispatch<React.SetStateAction<Milestone[]>>;
+  setHabits: React.Dispatch<React.SetStateAction<Habit[]>>;
+  toggleHabitCompletion: (habitId: string, date: string) => void;
+  softDeleteGoal: (
+    goalId: string,
     cascade: boolean,
-    reassignKeyResultsToObjectiveId?: string,
+    reassignMilestonesToGoalId?: string,
   ) => void;
-  softDeleteKeyResult: (
-    keyResultId: string,
+  softDeleteMilestone: (
+    milestoneId: string,
     cascade: boolean,
-    relinkChildrenToObjective?: boolean,
+    relinkChildrenToGoal?: boolean,
   ) => void;
-  softDeleteDailyHabit: (habitId: string) => void;
-  softDeleteKeyActivity: (activityId: string) => void;
-  moveDailyHabit: (habitId: string, target: MoveTarget) => void;
-  moveKeyActivity: (activityId: string, target: MoveTarget) => void;
-  moveKeyResult: (keyResultId: string, objectiveId: string) => void;
+  softDeleteHabit: (habitId: string) => void;
+  moveHabit: (habitId: string, target: MoveTarget) => void;
+  moveMilestone: (milestoneId: string, goalId: string) => void;
 }
 
 const AppDataContext = createContext<AppDataContextValue | null>(null);
@@ -62,53 +49,39 @@ function stampDeleted<T extends { deletedAt?: string }>(item: T): T {
 
 function resolveMoveTarget(
   target: MoveTarget,
-): { linkedGoalId?: string; linkedGoalType?: 'objective' | 'keyResult' } {
+): { linkedGoalId?: string; linkedGoalType?: LinkedGoalType } {
   if (target.scope === 'standalone') {
     return { linkedGoalId: undefined, linkedGoalType: undefined };
   }
 
-  if (target.scope === 'objective') {
+  if (target.scope === 'goal') {
     return {
-      linkedGoalId: target.objectiveId,
-      linkedGoalType: 'objective',
+      linkedGoalId: target.goalId,
+      linkedGoalType: 'goal',
     };
   }
 
   return {
-    linkedGoalId: target.keyResultId,
-    linkedGoalType: 'keyResult',
+    linkedGoalId: target.milestoneId,
+    linkedGoalType: 'milestone',
   };
 }
 
 export function AppDataProvider({ children }: { children: ReactNode }) {
-  const [objectives, setObjectives] =
-    useState<Objective[]>(initialObjectives);
-  const [keyResults, setKeyResults] =
-    useState<KeyResult[]>(initialKeyResults);
-  const [dailyHabits, setDailyHabits] =
-    useState<DailyHabit[]>(initialDailyHabits);
-  const [keyActivities, setKeyActivities] =
-    useState<KeyActivity[]>(initialKeyActivities);
+  const [goals, setGoals] = useState<Goal[]>(initialGoals);
+  const [milestones, setMilestones] =
+    useState<Milestone[]>(initialMilestones);
+  const [habits, setHabits] = useState<Habit[]>(initialHabits);
 
-  const activeObjectives = useMemo(
-    () => filterActive(objectives),
-    [objectives],
+  const activeGoals = useMemo(() => filterActive(goals), [goals]);
+  const activeMilestones = useMemo(
+    () => filterActive(milestones),
+    [milestones],
   );
-  const activeKeyResults = useMemo(
-    () => filterActive(keyResults),
-    [keyResults],
-  );
-  const activeDailyHabits = useMemo(
-    () => filterActive(dailyHabits),
-    [dailyHabits],
-  );
-  const activeKeyActivities = useMemo(
-    () => filterActive(keyActivities),
-    [keyActivities],
-  );
+  const activeHabits = useMemo(() => filterActive(habits), [habits]);
 
-  const toggleDailyHabitCompletion = (habitId: string, date: string) => {
-    setDailyHabits((current) =>
+  const toggleHabitCompletion = (habitId: string, date: string) => {
+    setHabits((current) =>
       current.map((habit) => {
         if (habit.id !== habitId) {
           return habit;
@@ -124,145 +97,96 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
     );
   };
 
-  const toggleKeyActivityCompletion = (activityId: string, date: string) => {
-    setKeyActivities((current) =>
-      current.map((activity) =>
-        activity.id === activityId
-          ? {
-              ...activity,
-              completionLog: toggleDateInLog(activity.completionLog, date),
-            }
-          : activity,
-      ),
-    );
-  };
-
-  const softDeleteDailyHabit = (habitId: string) => {
-    setDailyHabits((current) =>
+  const softDeleteHabit = (habitId: string) => {
+    setHabits((current) =>
       current.map((habit) =>
         habit.id === habitId ? stampDeleted(habit) : habit,
       ),
     );
   };
 
-  const softDeleteKeyActivity = (activityId: string) => {
-    setKeyActivities((current) =>
-      current.map((activity) =>
-        activity.id === activityId ? stampDeleted(activity) : activity,
-      ),
-    );
-  };
-
-  const softDeleteKeyResult = (
-    keyResultId: string,
+  const softDeleteMilestone = (
+    milestoneId: string,
     cascade: boolean,
-    relinkChildrenToObjective = false,
+    relinkChildrenToGoal = false,
   ) => {
-    const keyResult = keyResults.find((item) => item.id === keyResultId);
-    if (!keyResult) {
+    const milestone = milestones.find((item) => item.id === milestoneId);
+    if (!milestone) {
       return;
     }
 
     const deletedAt = todayDateString();
 
-    setKeyResults((current) =>
+    setMilestones((current) =>
       current.map((item) =>
-        item.id === keyResultId ? { ...item, deletedAt } : item,
+        item.id === milestoneId ? { ...item, deletedAt } : item,
       ),
     );
 
     if (cascade) {
-      setDailyHabits((current) =>
+      setHabits((current) =>
         current.map((habit) =>
-          habit.linkedGoalType === 'keyResult' &&
-          habit.linkedGoalId === keyResultId
+          habit.linkedGoalType === 'milestone' &&
+          habit.linkedGoalId === milestoneId
             ? stampDeleted(habit)
             : habit,
-        ),
-      );
-      setKeyActivities((current) =>
-        current.map((activity) =>
-          activity.linkedGoalType === 'keyResult' &&
-          activity.linkedGoalId === keyResultId
-            ? stampDeleted(activity)
-            : activity,
         ),
       );
       return;
     }
 
-    const childLink = relinkChildrenToObjective
+    const childLink = relinkChildrenToGoal
       ? {
-          linkedGoalId: keyResult.objectiveId,
-          linkedGoalType: 'objective' as const,
+          linkedGoalId: milestone.goalId,
+          linkedGoalType: 'goal' as const,
         }
       : {
           linkedGoalId: undefined,
           linkedGoalType: undefined,
         };
 
-    setDailyHabits((current) =>
+    setHabits((current) =>
       current.map((habit) =>
-        habit.linkedGoalType === 'keyResult' &&
-        habit.linkedGoalId === keyResultId
+        habit.linkedGoalType === 'milestone' &&
+        habit.linkedGoalId === milestoneId
           ? { ...habit, ...childLink }
           : habit,
       ),
     );
-    setKeyActivities((current) =>
-      current.map((activity) =>
-        activity.linkedGoalType === 'keyResult' &&
-        activity.linkedGoalId === keyResultId
-          ? { ...activity, ...childLink }
-          : activity,
-      ),
-    );
   };
 
-  const softDeleteObjective = (
-    objectiveId: string,
+  const softDeleteGoal = (
+    goalId: string,
     cascade: boolean,
-    reassignKeyResultsToObjectiveId?: string,
+    reassignMilestonesToGoalId?: string,
   ) => {
     const deletedAt = todayDateString();
 
-    setObjectives((current) =>
-      current.map((objective) =>
-        objective.id === objectiveId ? { ...objective, deletedAt } : objective,
+    setGoals((current) =>
+      current.map((goal) =>
+        goal.id === goalId ? { ...goal, deletedAt } : goal,
       ),
     );
 
     if (cascade) {
-      setKeyResults((current) =>
-        current.map((keyResult) =>
-          keyResult.objectiveId === objectiveId
-            ? stampDeleted(keyResult)
-            : keyResult,
+      setMilestones((current) =>
+        current.map((milestone) =>
+          milestone.goalId === goalId ? stampDeleted(milestone) : milestone,
         ),
       );
-      setDailyHabits((current) =>
+      setHabits((current) =>
         current.map((habit) =>
-          habit.linkedGoalType === 'objective' &&
-          habit.linkedGoalId === objectiveId
+          habit.linkedGoalType === 'goal' && habit.linkedGoalId === goalId
             ? stampDeleted(habit)
             : habit,
-        ),
-      );
-      setKeyActivities((current) =>
-        current.map((activity) =>
-          activity.linkedGoalType === 'objective' &&
-          activity.linkedGoalId === objectiveId
-            ? stampDeleted(activity)
-            : activity,
         ),
       );
       return;
     }
 
-    setDailyHabits((current) =>
+    setHabits((current) =>
       current.map((habit) =>
-        habit.linkedGoalType === 'objective' &&
-        habit.linkedGoalId === objectiveId
+        habit.linkedGoalType === 'goal' && habit.linkedGoalId === goalId
           ? {
               ...habit,
               linkedGoalId: undefined,
@@ -271,101 +195,60 @@ export function AppDataProvider({ children }: { children: ReactNode }) {
           : habit,
       ),
     );
-    setKeyActivities((current) =>
-      current.map((activity) =>
-        activity.linkedGoalType === 'objective' &&
-        activity.linkedGoalId === objectiveId
-          ? {
-              ...activity,
-              linkedGoalId: undefined,
-              linkedGoalType: undefined,
-            }
-          : activity,
-      ),
-    );
 
-    if (reassignKeyResultsToObjectiveId) {
-      setKeyResults((current) =>
-        current.map((keyResult) =>
-          keyResult.objectiveId === objectiveId
-            ? {
-                ...keyResult,
-                objectiveId: reassignKeyResultsToObjectiveId,
-              }
-            : keyResult,
+    if (reassignMilestonesToGoalId) {
+      setMilestones((current) =>
+        current.map((milestone) =>
+          milestone.goalId === goalId
+            ? { ...milestone, goalId: reassignMilestonesToGoalId }
+            : milestone,
         ),
       );
     } else {
-      setKeyResults((current) =>
-        current.map((keyResult) =>
-          keyResult.objectiveId === objectiveId
-            ? stampDeleted(keyResult)
-            : keyResult,
+      setMilestones((current) =>
+        current.map((milestone) =>
+          milestone.goalId === goalId ? stampDeleted(milestone) : milestone,
         ),
       );
     }
   };
 
-  const moveDailyHabit = (habitId: string, target: MoveTarget) => {
+  const moveHabit = (habitId: string, target: MoveTarget) => {
     const link = resolveMoveTarget(target);
-    setDailyHabits((current) =>
+    setHabits((current) =>
       current.map((habit) =>
         habit.id === habitId ? { ...habit, ...link } : habit,
       ),
     );
   };
 
-  const moveKeyActivity = (activityId: string, target: MoveTarget) => {
-    const link = resolveMoveTarget(target);
-    setKeyActivities((current) =>
-      current.map((activity) =>
-        activity.id === activityId ? { ...activity, ...link } : activity,
-      ),
-    );
-  };
-
-  const moveKeyResult = (keyResultId: string, objectiveId: string) => {
-    setKeyResults((current) =>
-      current.map((keyResult) =>
-        keyResult.id === keyResultId ? { ...keyResult, objectiveId } : keyResult,
+  const moveMilestone = (milestoneId: string, goalId: string) => {
+    setMilestones((current) =>
+      current.map((milestone) =>
+        milestone.id === milestoneId ? { ...milestone, goalId } : milestone,
       ),
     );
   };
 
   const value = useMemo(
     () => ({
-      objectives,
-      keyResults,
-      dailyHabits,
-      keyActivities,
-      activeObjectives,
-      activeKeyResults,
-      activeDailyHabits,
-      activeKeyActivities,
-      setObjectives,
-      setKeyResults,
-      setDailyHabits,
-      setKeyActivities,
-      toggleDailyHabitCompletion,
-      toggleKeyActivityCompletion,
-      softDeleteObjective,
-      softDeleteKeyResult,
-      softDeleteDailyHabit,
-      softDeleteKeyActivity,
-      moveDailyHabit,
-      moveKeyActivity,
-      moveKeyResult,
+      goals,
+      milestones,
+      habits,
+      activeGoals,
+      activeMilestones,
+      activeHabits,
+      setGoals,
+      setMilestones,
+      setHabits,
+      toggleHabitCompletion,
+      softDeleteGoal,
+      softDeleteMilestone,
+      softDeleteHabit,
+      moveHabit,
+      moveMilestone,
     }),
-    [
-      objectives,
-      keyResults,
-      dailyHabits,
-      keyActivities,
-      activeObjectives,
-      activeKeyResults,
-      activeDailyHabits,
-      activeKeyActivities,
-    ],
+    [goals, milestones, habits, activeGoals, activeMilestones, activeHabits],
   );
 
   return (
@@ -382,9 +265,8 @@ export function useAppData() {
 }
 
 export {
-  keyResultsForObjective,
-  linkedActivitiesForKeyResult,
-  linkedActivitiesForObjective,
-  linkedHabitsForKeyResult,
-  linkedHabitsForObjective,
+  linkedHabitsForGoal,
+  linkedHabitsForMilestone,
+  milestonesForGoal,
+  standaloneHabits,
 } from '../utils/activeItems';

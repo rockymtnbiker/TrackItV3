@@ -1,12 +1,13 @@
-import type { DailyHabit, KeyActivity } from '../types';
+import type { Habit, LinkedGoalType, Milestone } from '../types';
 import { isFutureDate, isItemActiveOnDate, isScheduledOnDate } from './date';
 import { calculateStreak } from './streak';
 
 export type ChecklistItem = {
   id: string;
   title: string;
-  type: 'dailyHabit' | 'keyActivity';
+  type: 'habit';
   isComplete: boolean;
+  isStatusDone: boolean;
   isInteractive: boolean;
   isPlanned: boolean;
   streak?: number;
@@ -21,32 +22,32 @@ export type ChecklistSection = {
 
 function getSectionTitle(
   sectionKey: string,
-  keyResultTitles: Map<string, string>,
-  objectiveTitles: Map<string, string>,
+  milestoneTitles: Map<string, string>,
+  goalTitles: Map<string, string>,
 ): string {
   if (sectionKey === 'standalone') {
     return 'Standalone';
   }
 
-  if (sectionKey.startsWith('objective:')) {
-    const objectiveId = sectionKey.replace('objective:', '');
-    const title = objectiveTitles.get(objectiveId);
-    return title ? `Objective: ${title}` : 'Other';
+  if (sectionKey.startsWith('goal:')) {
+    const goalId = sectionKey.replace('goal:', '');
+    const title = goalTitles.get(goalId);
+    return title ? `Goal: ${title}` : 'Other';
   }
 
-  return keyResultTitles.get(sectionKey) ?? 'Other';
+  return milestoneTitles.get(sectionKey) ?? 'Other';
 }
 
 function getSectionKey(
   linkedGoalId?: string,
-  linkedGoalType?: 'objective' | 'keyResult',
+  linkedGoalType?: LinkedGoalType,
 ): string {
-  if (linkedGoalType === 'keyResult' && linkedGoalId) {
+  if (linkedGoalType === 'milestone' && linkedGoalId) {
     return linkedGoalId;
   }
 
-  if (linkedGoalType === 'objective' && linkedGoalId) {
-    return `objective:${linkedGoalId}`;
+  if (linkedGoalType === 'goal' && linkedGoalId) {
+    return `goal:${linkedGoalId}`;
   }
 
   return 'standalone';
@@ -54,53 +55,59 @@ function getSectionKey(
 
 function buildSectionsFromMap(
   sectionMap: Map<string, ChecklistItem[]>,
-  keyResultTitles: Map<string, string>,
-  objectiveTitles: Map<string, string>,
+  milestoneTitles: Map<string, string>,
+  goalTitles: Map<string, string>,
 ): ChecklistSection[] {
-  const keyResultSections = [...sectionMap.entries()]
-    .filter(([key]) => keyResultTitles.has(key))
+  const milestoneSections = [...sectionMap.entries()]
+    .filter(([key]) => milestoneTitles.has(key))
     .map(([key, items]) => ({
       key,
-      title: getSectionTitle(key, keyResultTitles, objectiveTitles),
+      title: getSectionTitle(key, milestoneTitles, goalTitles),
       items,
     }));
 
   const otherSections = [...sectionMap.entries()]
-    .filter(([key]) => !keyResultTitles.has(key))
+    .filter(([key]) => !milestoneTitles.has(key))
     .map(([key, items]) => ({
       key,
-      title: getSectionTitle(key, keyResultTitles, objectiveTitles),
+      title: getSectionTitle(key, milestoneTitles, goalTitles),
       items,
     }));
 
-  return [...keyResultSections, ...otherSections];
+  return [...milestoneSections, ...otherSections];
 }
 
 export function buildChecklistSections(
   selectedDate: string,
-  dailyHabits: DailyHabit[],
-  keyActivities: KeyActivity[],
-  keyResultTitles: Map<string, string>,
-  objectiveTitles: Map<string, string>,
+  habits: Habit[],
+  milestoneTitles: Map<string, string>,
+  goalTitles: Map<string, string>,
   today: string,
+  _milestones: Milestone[] = [],
 ): ChecklistSection[] {
   const isFuture = isFutureDate(selectedDate, today);
   const isInteractive = !isFuture;
   const sectionMap = new Map<string, ChecklistItem[]>();
 
-  for (const habit of dailyHabits) {
+  for (const habit of habits) {
     if (!isItemActiveOnDate(habit, selectedDate)) {
+      continue;
+    }
+
+    if (!isScheduledOnDate(habit.scheduledDays, selectedDate)) {
       continue;
     }
 
     const sectionKey = getSectionKey(habit.linkedGoalId, habit.linkedGoalType);
     const items = sectionMap.get(sectionKey) ?? [];
+    const isStatusDone = habit.status === 'done';
     items.push({
       id: habit.id,
       title: habit.title,
-      type: 'dailyHabit',
+      type: 'habit',
       isComplete: habit.completionLog.includes(selectedDate),
-      isInteractive,
+      isStatusDone,
+      isInteractive: isInteractive && !isStatusDone,
       isPlanned: isFuture,
       streak: calculateStreak(habit.completionLog, selectedDate),
       sectionKey,
@@ -108,32 +115,5 @@ export function buildChecklistSections(
     sectionMap.set(sectionKey, items);
   }
 
-  for (const activity of keyActivities) {
-    if (!isItemActiveOnDate(activity, selectedDate)) {
-      continue;
-    }
-
-    if (!isScheduledOnDate(activity.scheduledDays, selectedDate)) {
-      continue;
-    }
-
-    const sectionKey = getSectionKey(
-      activity.linkedGoalId,
-      activity.linkedGoalType,
-    );
-    const items = sectionMap.get(sectionKey) ?? [];
-    items.push({
-      id: activity.id,
-      title: activity.title,
-      type: 'keyActivity',
-      isComplete: activity.completionLog.includes(selectedDate),
-      isInteractive,
-      isPlanned: isFuture,
-      streak: calculateStreak(activity.completionLog, selectedDate),
-      sectionKey,
-    });
-    sectionMap.set(sectionKey, items);
-  }
-
-  return buildSectionsFromMap(sectionMap, keyResultTitles, objectiveTitles);
+  return buildSectionsFromMap(sectionMap, milestoneTitles, goalTitles);
 }

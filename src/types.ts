@@ -1,6 +1,16 @@
-export type KeyResultStatus = 'not_started' | 'in_progress' | 'completed';
+export type GoalStatus = 'active' | 'done';
 
-export type LinkedGoalType = 'objective' | 'keyResult';
+export type GoalCategory =
+  | 'Health'
+  | 'Career'
+  | 'Finance'
+  | 'Personal'
+  | 'Spiritual';
+
+/** Recurring window for a numeric target, or cumulative / per-occurrence. */
+export type TargetPeriod = 'None' | 'Day' | 'Week' | 'Month' | 'Instance';
+
+export type LinkedGoalType = 'goal' | 'milestone';
 
 export type Weekday =
   | 'sunday'
@@ -11,60 +21,88 @@ export type Weekday =
   | 'friday'
   | 'saturday';
 
-export interface Objective {
+export const GOAL_CATEGORIES: GoalCategory[] = [
+  'Health',
+  'Career',
+  'Finance',
+  'Personal',
+  'Spiritual',
+];
+
+export const TARGET_PERIODS: TargetPeriod[] = [
+  'None',
+  'Day',
+  'Week',
+  'Month',
+  'Instance',
+];
+
+export const ALL_WEEKDAYS: Weekday[] = [
+  'sunday',
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+];
+
+export interface Goal {
   id: string;
   title: string;
+  /** Order within the top-level Goals list (0-based). */
+  sortOrder: number;
   createdDate: string;
   startDate: string;
   endDate: string;
-  affirmation?: string;
+  category?: GoalCategory;
+  target?: number;
+  /** Freeform display label (e.g. "dollars", "miles", "runs"). */
+  unit?: string;
+  period?: TargetPeriod;
+  status: GoalStatus;
   deletedAt?: string;
 }
 
-export interface KeyResult {
+export interface Milestone {
   id: string;
-  objectiveId: string;
+  goalId: string;
   title: string;
-  targetNumber: number;
-  unit: string;
-  startDate: string;
-  endDate: string;
-  currentProgress: number;
-  status: KeyResultStatus;
+  /** Order within the parent Goal's milestones list (0-based). */
+  sortOrder: number;
+  target?: number;
+  /** Freeform display label (e.g. "dollars", "miles", "runs"). */
+  unit?: string;
+  period?: TargetPeriod;
+  startDate?: string;
+  endDate?: string;
+  category?: GoalCategory;
+  status: GoalStatus;
   createdDate: string;
   deletedAt?: string;
 }
 
-export interface KeyActivity {
+export interface Habit {
   id: string;
   title: string;
-  cadence: 'weekly';
-  /** Derived from scheduledDays.length at creation time. */
-  weeklyTarget: number;
+  /** Order within the parent Goal or Milestone habits list (0-based). */
+  sortOrder: number;
+  /** Selecting all 7 days represents a daily habit. */
   scheduledDays: Weekday[];
-  linkedGoalId?: string;
-  linkedGoalType?: LinkedGoalType;
-  completionLog: string[];
-  createdDate: string;
-  startDate: string;
-  endDate: string;
-  deletedAt?: string;
-}
-
-export interface DailyHabit {
-  id: string;
-  title: string;
+  /** Derived as scheduledDays.length — not set independently by the user. */
+  weeklyTarget: number;
   linkedGoalId?: string;
   linkedGoalType?: LinkedGoalType;
   completionLog: string[];
   streakCount: number;
   createdDate: string;
-  startDate: string;
-  endDate: string;
+  startDate?: string;
+  endDate?: string;
+  status: GoalStatus;
   deletedAt?: string;
 }
 
 export type MoveTarget =
   | { scope: 'standalone' }
-  | { scope: 'objective'; objectiveId: string }
-  | { scope: 'keyResult'; keyResultId: string };
+  | { scope: 'goal'; goalId: string }
+  | { scope: 'milestone'; milestoneId: string };
