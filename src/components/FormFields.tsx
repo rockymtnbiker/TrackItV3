@@ -13,7 +13,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import type { TargetPeriod, Weekday } from '../types';
+import type { GoalStatus, TargetPeriod, Weekday } from '../types';
 import {
   dateFromIso,
   formatDateMDY,
@@ -31,16 +31,24 @@ export const PERIOD_OPTIONS: { value: TargetPeriod; label: string }[] = [
   { value: 'Instance', label: 'Per Session' },
 ];
 
+const GOAL_STATUS_OPTIONS: { value: GoalStatus; label: string }[] = [
+  { value: 'pending', label: 'Pending' },
+  { value: 'active', label: 'Active' },
+  { value: 'done', label: 'Done' },
+];
+
 export function FormFieldRow({
   label,
   children,
+  labelWidth = 78,
 }: {
   label: string;
   children: ReactNode;
+  labelWidth?: number;
 }) {
   return (
     <View style={styles.formFieldRow}>
-      <Text style={styles.formFieldLabel}>{label}</Text>
+      <Text style={[styles.formFieldLabel, { width: labelWidth }]}>{label}</Text>
       <View style={styles.formFieldControl}>{children}</View>
     </View>
   );
@@ -132,10 +140,12 @@ export function FormDateRow({
   label,
   value,
   onChange,
+  labelWidth,
 }: {
   label: string;
   value: string;
   onChange: (isoDate: string) => void;
+  labelWidth?: number;
 }) {
   const [open, setOpen] = useState(false);
   const pickerValue = dateFromIso(value || todayDateString());
@@ -155,7 +165,7 @@ export function FormDateRow({
 
   return (
     <>
-      <FormFieldRow label={label}>
+      <FormFieldRow label={label} labelWidth={labelWidth}>
         <Pressable
           onPress={() => setOpen(true)}
           style={({ pressed }) => [
@@ -228,6 +238,31 @@ export function FormInlineInput(props: {
   return <TextInput style={styles.formInlineInput} {...props} />;
 }
 
+export function FormDescriptionField({
+  value,
+  onChangeText,
+  placeholder = 'Optional',
+}: {
+  value: string;
+  onChangeText: (text: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <View style={styles.formStackedBlock}>
+      <Text style={styles.formFieldLabel}>Description</Text>
+      <TextInput
+        style={styles.formMultilineInput}
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        multiline
+        numberOfLines={4}
+        textAlignVertical="top"
+      />
+    </View>
+  );
+}
+
 export function FormDayPicker({
   selectedDays,
   onToggleDay,
@@ -279,11 +314,58 @@ export function FormScheduledDaysBlock({
   );
 }
 
+/** 3-way Pending / Active / Done control for Goals and Milestones. */
+export function FormStatusSegment({
+  value,
+  onChange,
+}: {
+  value: GoalStatus;
+  onChange: (status: GoalStatus) => void;
+}) {
+  return (
+    <View style={styles.statusSegment}>
+      {GOAL_STATUS_OPTIONS.map((option) => {
+        const selected = value === option.value;
+        return (
+          <Pressable
+            key={option.value}
+            onPress={() => onChange(option.value)}
+            style={({ pressed }) => [
+              styles.statusSegmentOption,
+              selected && styles.statusSegmentOptionSelected,
+              selected &&
+                option.value === 'pending' &&
+                styles.statusSegmentPending,
+              selected &&
+                option.value === 'active' &&
+                styles.statusSegmentActive,
+              selected && option.value === 'done' && styles.statusSegmentDone,
+              pressed && styles.pressed,
+            ]}
+            accessibilityRole="button"
+            accessibilityState={{ selected }}
+            accessibilityLabel={`Status ${option.label}`}
+          >
+            <Text
+              style={[
+                styles.statusSegmentText,
+                selected && styles.statusSegmentTextSelected,
+              ]}
+            >
+              {option.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
 export const formFieldStyles = StyleSheet.create({
   formFieldRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 8,
     minHeight: 40,
   },
   formFieldLabel: {
@@ -296,7 +378,7 @@ export const formFieldStyles = StyleSheet.create({
     flex: 1,
   },
   formStackedBlock: {
-    gap: 8,
+    gap: 6,
   },
   formInlineInput: {
     borderWidth: 1,
@@ -308,6 +390,17 @@ export const formFieldStyles = StyleSheet.create({
     color: '#111',
     backgroundColor: '#fff',
   },
+  formMultilineInput: {
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: '#111',
+    backgroundColor: '#fff',
+    minHeight: 88,
+  },
   formSelectButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -317,8 +410,9 @@ export const formFieldStyles = StyleSheet.create({
     borderColor: '#ddd',
     borderRadius: 8,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 8,
     backgroundColor: '#fff',
+    minHeight: 40,
   },
   formSelectText: {
     flex: 1,
@@ -421,6 +515,42 @@ export const formFieldStyles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: '#fff',
+  },
+  statusSegment: {
+    flexDirection: 'row',
+    flex: 1,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 8,
+    padding: 2,
+    gap: 2,
+  },
+  statusSegmentOption: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    minHeight: 36,
+    borderRadius: 6,
+  },
+  statusSegmentOptionSelected: {
+    backgroundColor: '#fff',
+  },
+  statusSegmentPending: {
+    backgroundColor: '#fff8e1',
+  },
+  statusSegmentActive: {
+    backgroundColor: '#e3f2fd',
+  },
+  statusSegmentDone: {
+    backgroundColor: '#e8f5e9',
+  },
+  statusSegmentText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#666',
+  },
+  statusSegmentTextSelected: {
+    color: '#111',
   },
   pressed: {
     opacity: 0.7,

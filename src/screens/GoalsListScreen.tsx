@@ -4,12 +4,13 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Modal,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import { Pressable, ScrollView } from 'react-native-gesture-handler';
+import { Pressable, ScrollView, Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { DraggableItem } from '../components/DraggableItem';
 import {
@@ -22,6 +23,7 @@ import {
 import { createGoal as createGoalApi, getGoals, updateGoal } from '../lib/goalsApi';
 import {
   createHabit as createHabitApi,
+  deleteHabit,
   getStandaloneHabits,
   updateHabit,
 } from '../lib/habitsApi';
@@ -40,7 +42,8 @@ import { withGoalSortOrder, withHabitSortOrder } from '../utils/habitDrafts';
 type Props = NativeStackScreenProps<GoalsStackParamList, 'GoalsList'>;
 
 /** Approximate Goal/Habit card height (padding + title + meta + margin). */
-const LIST_CARD_HEIGHT = 84;
+const LIST_CARD_HEIGHT = 72;
+const SWIPE_DELETE_WIDTH = 72;
 
 function parseOptionalTarget(value: string): number | undefined {
   const trimmed = value.trim();
@@ -167,8 +170,8 @@ export default function GoalsListScreen({ navigation }: Props) {
       const created = await createGoalApi({
         title: title.trim(),
         sortOrder: maxOrder + 1,
-        startDate: startDate.trim(),
-        endDate: endDate.trim(),
+        targetStartDate: startDate.trim(),
+        targetEndDate: endDate.trim(),
         category: category || undefined,
         target: optionalTarget,
         unit: unit.trim() || undefined,
@@ -259,6 +262,29 @@ export default function GoalsListScreen({ navigation }: Props) {
     });
   };
 
+  const removeHabit = (id: string) => {
+    setHabits((current) => current.filter((item) => item.id !== id));
+    void deleteHabit(id).catch((error) => {
+      console.warn('Failed to delete habit', error);
+      void loadHabits();
+    });
+  };
+
+  const confirmDeleteHabit = (id: string) => {
+    Alert.alert(
+      'Delete Habit',
+      'Are you sure you want to delete this habit? This will permanently remove all associated results.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => removeHabit(id),
+        },
+      ],
+    );
+  };
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ScrollView
@@ -303,31 +329,43 @@ export default function GoalsListScreen({ navigation }: Props) {
           </Text>
         ) : (
           visibleGoals.map((goal, index) => (
-            <DraggableItem
+            <View
               key={goal.id}
-              index={index}
-              itemHeight={LIST_CARD_HEIGHT}
-              onPress={() =>
-                navigation.navigate('GoalDetail', { goalId: goal.id })
-              }
-              onDragStart={() => setDraggingId(goal.id)}
-              onDragMove={() => {}}
-              onDragEnd={(from, to) => {
-                const clampedTo = Math.max(
-                  0,
-                  Math.min(goalsListRef.current.length - 1, to),
-                );
-                reorderGoals(from, clampedTo);
-                setDraggingId(null);
-              }}
-              style={styles.card}
+              style={draggingId === goal.id ? styles.draggingWrap : undefined}
             >
-              <Text style={styles.cardTitle}>{goal.title}</Text>
-              <Text style={styles.cardMeta}>
-                {formatDate(goal.startDate)} – {formatDate(goal.endDate)}
-                {goal.category ? ` · ${goal.category}` : ''}
-              </Text>
-            </DraggableItem>
+              <DraggableItem
+                index={index}
+                itemHeight={LIST_CARD_HEIGHT}
+                onPress={() =>
+                  navigation.navigate('GoalDetail', { goalId: goal.id })
+                }
+                onDragStart={() => setDraggingId(goal.id)}
+                onDragMove={() => {}}
+                onDragEnd={(from, to) => {
+                  const clampedTo = Math.max(
+                    0,
+                    Math.min(goalsListRef.current.length - 1, to),
+                  );
+                  reorderGoals(from, clampedTo);
+                  setDraggingId(null);
+                }}
+                style={styles.card}
+              >
+                <Text style={styles.cardTitle}>{goal.title}</Text>
+                <Text style={styles.cardMeta}>
+                  {goal.targetStartDate || goal.targetEndDate
+                    ? `${goal.targetStartDate ? formatDate(goal.targetStartDate) : '—'} – ${
+                        goal.targetEndDate ? formatDate(goal.targetEndDate) : '—'
+                      }`
+                    : goal.category
+                      ? goal.category
+                      : ''}
+                  {goal.category && (goal.targetStartDate || goal.targetEndDate)
+                    ? ` · ${goal.category}`
+                    : ''}
+                </Text>
+              </DraggableItem>
+            </View>
           ))
         )}
 
@@ -351,32 +389,53 @@ export default function GoalsListScreen({ navigation }: Props) {
             </Pressable>
           </View>
         ) : visibleHabits.length === 0 ? (
-          <Text style={styles.emptyText}>No standalone habits yet.</Text>
+          <Text style={styles.emptyText}>No habits yet.</Text>
         ) : (
           visibleHabits.map((habit, index) => (
-            <DraggableItem
+            <View
               key={habit.id}
-              index={index}
-              itemHeight={LIST_CARD_HEIGHT}
-              onPress={() =>
-                navigation.navigate('HabitDetail', { habitId: habit.id })
-              }
-              onDragStart={() => setDraggingId(habit.id)}
-              onDragMove={() => {}}
-              onDragEnd={(from, to) => {
-                const clampedTo = Math.max(
-                  0,
-                  Math.min(habitsListRef.current.length - 1, to),
-                );
-                reorderHabits(from, clampedTo);
-                setDraggingId(null);
-              }}
-              style={styles.card}
+              style={draggingId === habit.id ? styles.draggingWrap : undefined}
             >
-              <Text style={styles.cardTitle}>
-                {habit.title || 'Untitled habit'}
-              </Text>
-            </DraggableItem>
+              <Swipeable
+                enabled={draggingId == null}
+                overshootRight={false}
+                containerStyle={
+                  draggingId === habit.id ? styles.draggingWrap : undefined
+                }
+                renderRightActions={() => (
+                  <Pressable
+                    onPress={() => confirmDeleteHabit(habit.id)}
+                    style={styles.swipeDeleteAction}
+                    accessibilityLabel="Delete habit"
+                  >
+                    <Ionicons name="trash" size={20} color="#fff" />
+                  </Pressable>
+                )}
+              >
+                <DraggableItem
+                  index={index}
+                  itemHeight={LIST_CARD_HEIGHT}
+                  onPress={() =>
+                    navigation.navigate('HabitDetail', { habitId: habit.id })
+                  }
+                  onDragStart={() => setDraggingId(habit.id)}
+                  onDragMove={() => {}}
+                  onDragEnd={(from, to) => {
+                    const clampedTo = Math.max(
+                      0,
+                      Math.min(habitsListRef.current.length - 1, to),
+                    );
+                    reorderHabits(from, clampedTo);
+                    setDraggingId(null);
+                  }}
+                  style={styles.card}
+                >
+                  <Text style={styles.cardTitle}>
+                    {habit.title || 'Untitled habit'}
+                  </Text>
+                </DraggableItem>
+              </Swipeable>
+            </View>
           ))
         )}
       </ScrollView>
@@ -559,14 +618,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#f2f2f7',
   },
   content: {
-    padding: 16,
-    paddingBottom: 40,
+    padding: 12,
+    paddingBottom: 28,
   },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 16,
+    marginBottom: 10,
   },
   sectionHeader: {
     fontSize: 28,
@@ -574,11 +633,15 @@ const styles = StyleSheet.create({
     color: '#111',
   },
   habitsHeader: {
-    marginTop: 24,
-    marginBottom: 16,
+    marginTop: 16,
+    marginBottom: 10,
   },
   addButton: {
     padding: 4,
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   emptyText: {
     fontSize: 15,
@@ -608,19 +671,35 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: '#fff',
     borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 8,
+    minHeight: 44,
+    justifyContent: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.06,
     shadowRadius: 4,
     elevation: 2,
   },
+  draggingWrap: {
+    zIndex: 1000,
+    elevation: 24,
+    position: 'relative',
+  },
+  swipeDeleteAction: {
+    width: SWIPE_DELETE_WIDTH,
+    backgroundColor: '#ff3b30',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    marginBottom: 8,
+  },
   cardTitle: {
     fontSize: 18,
     fontWeight: '700',
     color: '#111',
-    marginBottom: 4,
+    marginBottom: 2,
   },
   cardMeta: {
     fontSize: 13,

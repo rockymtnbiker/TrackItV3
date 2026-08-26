@@ -1,4 +1,4 @@
-import type { GoalStatus, Habit, Weekday } from '../types';
+import type { Habit, HabitStatus, Weekday } from '../types';
 import { ALL_WEEKDAYS } from '../types';
 import { addDays, getWeekday, todayDateString } from '../utils/date';
 import { supabase } from './supabase';
@@ -23,7 +23,7 @@ export type HabitInput = {
   title: string;
   goalId?: string | null;
   milestoneId?: string | null;
-  status?: GoalStatus;
+  status?: HabitStatus;
   scheduledDays?: Weekday[];
   weeklyTarget?: number;
   startDate?: string | null;
@@ -52,8 +52,8 @@ type ParentRow = {
   id: string;
   title: string;
   created_date: string | null;
-  start_date: string | null;
-  end_date: string | null;
+  target_start_date: string | null;
+  target_end_date: string | null;
   deleted_at: string | null;
 };
 
@@ -86,8 +86,8 @@ function mapParentRow(row: ParentRow | null): ActiveHabitParent | null {
     id: row.id,
     title: row.title,
     createdDate: (row.created_date ?? '').slice(0, 10),
-    startDate: row.start_date || undefined,
-    endDate: row.end_date || undefined,
+    startDate: row.target_start_date || undefined,
+    endDate: row.target_end_date || undefined,
     deletedAt: row.deleted_at ? row.deleted_at.slice(0, 10) : undefined,
   };
 }
@@ -118,7 +118,7 @@ function mapRowToHabit(row: HabitRow): Habit {
     createdDate: (row.created_date ?? '').slice(0, 10),
     startDate: row.start_date || undefined,
     endDate: row.end_date || undefined,
-    status: (row.status as GoalStatus) || 'active',
+    status: (row.status as HabitStatus) || 'active',
     deletedAt: row.deleted_at ? row.deleted_at.slice(0, 10) : undefined,
   };
 }
@@ -242,16 +242,16 @@ export async function getAllActiveHabits(): Promise<ActiveHabit[]> {
         id,
         title,
         created_date,
-        start_date,
-        end_date,
+        target_start_date,
+        target_end_date,
         deleted_at
       ),
       milestone:milestones (
         id,
         title,
         created_date,
-        start_date,
-        end_date,
+        target_start_date,
+        target_end_date,
         deleted_at
       )
     `,
@@ -339,6 +339,14 @@ export async function softDeleteHabit(id: string): Promise<void> {
     .from('habits')
     .update({ deleted_at: new Date().toISOString() })
     .eq('id', id);
+
+  if (error) {
+    throw error;
+  }
+}
+
+export async function deleteHabit(id: string): Promise<void> {
+  const { error } = await supabase.from('habits').delete().eq('id', id);
 
   if (error) {
     throw error;

@@ -86,7 +86,8 @@ export function DraggableItem({
       .activateAfterLongPress(LONG_PRESS_MS)
       .enabled(enabled)
       .onStart(() => {
-        lifted.value = withTiming(1, { duration: 120 });
+        // Set immediately so zIndex/elevation kick in before the first frame.
+        lifted.value = 1;
         runOnJS(beginDrag)();
       })
       .onUpdate((event) => {
@@ -125,15 +126,18 @@ export function DraggableItem({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, Boolean(onPress)]);
 
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [
-      { translateY: translateY.value },
-      { scale: 1 + lifted.value * 0.03 },
-    ],
-    zIndex: lifted.value > 0 ? 10 : 1,
-    shadowOpacity: 0.06 + lifted.value * 0.14,
-    elevation: 2 + lifted.value * 6,
-  }));
+  const animatedStyle = useAnimatedStyle(() => {
+    const active = lifted.value > 0;
+    return {
+      transform: [
+        { translateY: translateY.value },
+        { scale: 1 + lifted.value * 0.03 },
+      ],
+      zIndex: active ? 1000 : 0,
+      elevation: active ? 24 : 0,
+      shadowOpacity: active ? 0.2 : 0.06,
+    };
+  });
 
   return (
     <GestureDetector gesture={gesture}>
@@ -150,6 +154,7 @@ export function DraggableItem({
 
 const styles = StyleSheet.create({
   base: {
+    position: 'relative',
     shadowColor: '#000',
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },

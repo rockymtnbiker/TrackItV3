@@ -4,6 +4,7 @@ import type {
   Milestone,
   TargetPeriod,
 } from '../types';
+import { todayDateString } from '../utils/date';
 import { supabase } from './supabase';
 
 type MilestoneRow = {
@@ -11,13 +12,16 @@ type MilestoneRow = {
   goal_id: string;
   user_id: string;
   title: string;
+  description: string | null;
   category: string | null;
   target: number | string | null;
   unit: string | null;
   period: string | null;
   status: string;
-  start_date: string | null;
-  end_date: string | null;
+  target_start_date: string | null;
+  target_end_date: string | null;
+  actual_start_date: string | null;
+  actual_end_date: string | null;
   created_date: string | null;
   sort_order: number | null;
   deleted_at: string | null;
@@ -26,13 +30,16 @@ type MilestoneRow = {
 export type MilestoneInput = {
   goalId: string;
   title: string;
+  description?: string | null;
   category?: GoalCategory | null;
   target?: number | null;
   unit?: string | null;
   period?: TargetPeriod | null;
   status?: GoalStatus;
-  startDate?: string | null;
-  endDate?: string | null;
+  targetStartDate?: string | null;
+  targetEndDate?: string | null;
+  actualStartDate?: string | null;
+  actualEndDate?: string | null;
   sortOrder?: number;
 };
 
@@ -48,10 +55,13 @@ function mapRowToMilestone(row: MilestoneRow): Milestone {
     id: row.id,
     goalId: row.goal_id,
     title: row.title,
+    description: row.description || undefined,
     sortOrder: row.sort_order ?? 0,
     createdDate: (row.created_date ?? '').slice(0, 10),
-    startDate: row.start_date || undefined,
-    endDate: row.end_date || undefined,
+    targetStartDate: row.target_start_date || undefined,
+    targetEndDate: row.target_end_date || undefined,
+    actualStartDate: row.actual_start_date || undefined,
+    actualEndDate: row.actual_end_date || undefined,
     category: (row.category as GoalCategory | null) || undefined,
     target: Number.isFinite(target) ? target : undefined,
     unit: row.unit || undefined,
@@ -65,6 +75,9 @@ function toRowUpdates(updates: MilestoneUpdates): Record<string, unknown> {
   const row: Record<string, unknown> = {};
   if (updates.title !== undefined) {
     row.title = updates.title;
+  }
+  if (updates.description !== undefined) {
+    row.description = updates.description?.trim() || null;
   }
   if (updates.category !== undefined) {
     row.category = updates.category || null;
@@ -82,11 +95,17 @@ function toRowUpdates(updates: MilestoneUpdates): Record<string, unknown> {
   if (updates.status !== undefined) {
     row.status = updates.status;
   }
-  if (updates.startDate !== undefined) {
-    row.start_date = updates.startDate || null;
+  if (updates.targetStartDate !== undefined) {
+    row.target_start_date = updates.targetStartDate || null;
   }
-  if (updates.endDate !== undefined) {
-    row.end_date = updates.endDate || null;
+  if (updates.targetEndDate !== undefined) {
+    row.target_end_date = updates.targetEndDate || null;
+  }
+  if (updates.actualStartDate !== undefined) {
+    row.actual_start_date = updates.actualStartDate || null;
+  }
+  if (updates.actualEndDate !== undefined) {
+    row.actual_end_date = updates.actualEndDate || null;
   }
   if (updates.sortOrder !== undefined) {
     row.sort_order = updates.sortOrder;
@@ -139,6 +158,27 @@ export async function getMilestones(): Promise<Milestone[]> {
   return (data as MilestoneRow[] | null)?.map(mapRowToMilestone) ?? [];
 }
 
+/** Active milestones, plus milestones marked done today (still shown on Today). */
+export async function getAllActiveMilestones(): Promise<Milestone[]> {
+  const userId = await requireUserId();
+  const today = todayDateString();
+  const { data, error } = await supabase
+    .from('milestones')
+    .select('*')
+    .eq('user_id', userId)
+    .is('deleted_at', null)
+    .or(
+      `status.eq.active,and(status.eq.done,actual_end_date.eq.${today})`,
+    )
+    .order('sort_order', { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  return (data as MilestoneRow[] | null)?.map(mapRowToMilestone) ?? [];
+}
+
 export async function getMilestone(id: string): Promise<Milestone | null> {
   const userId = await requireUserId();
   const { data, error } = await supabase
@@ -166,6 +206,7 @@ export async function createMilestone(
       user_id: userId,
       goal_id: milestone.goalId,
       title: milestone.title,
+      description: milestone.description?.trim() || null,
       category: milestone.category || null,
       target: milestone.target ?? null,
       unit: milestone.unit || null,
@@ -174,8 +215,10 @@ export async function createMilestone(
           ? milestone.period
           : null,
       status: milestone.status ?? 'active',
-      start_date: milestone.startDate || null,
-      end_date: milestone.endDate || null,
+      target_start_date: milestone.targetStartDate || null,
+      target_end_date: milestone.targetEndDate || null,
+      actual_start_date: milestone.actualStartDate || null,
+      actual_end_date: milestone.actualEndDate || null,
       sort_order: milestone.sortOrder ?? 0,
     })
     .select('*')
@@ -207,11 +250,73 @@ export async function updateMilestone(
   return mapRowToMilestone(data as MilestoneRow);
 }
 
+/**
+ * Updates status and auto-manages actual dates:
+ * - active: set actual_start_date to today if null; clear actual_end_date if set
+ * - done: set actual_end_date to today
+ * - pending: no automatic date changes
+ */
+export async function setMilestoneStatus(
+  id: string,
+  newStatus: GoalStatus,
+): Promise<Milestone> {
+  const userId = await requireUserId();
+  const { data: existing, error: fetchError } = await supabase
+    .from('milestones')
+    .select('*')
+    .eq('id', id)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (fetchError) {
+    throw fetchError;
+  }
+  if (!existing) {
+    throw new Error('Milestone not found.');
+  }
+
+  const row = existing as MilestoneRow;
+  const today = todayDateString();
+  const updates: Record<string, unknown> = { status: newStatus };
+
+  if (newStatus === 'active') {
+    if (!row.actual_start_date) {
+      updates.actual_start_date = today;
+    }
+    if (row.actual_end_date) {
+      updates.actual_end_date = null;
+    }
+  } else if (newStatus === 'done') {
+    updates.actual_end_date = today;
+  }
+
+  const { data, error } = await supabase
+    .from('milestones')
+    .update(updates)
+    .eq('id', id)
+    .select('*')
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return mapRowToMilestone(data as MilestoneRow);
+}
+
 export async function softDeleteMilestone(id: string): Promise<void> {
   const { error } = await supabase
     .from('milestones')
     .update({ deleted_at: new Date().toISOString() })
     .eq('id', id);
+
+  if (error) {
+    throw error;
+  }
+}
+
+export async function deleteMilestone(id: string): Promise<void> {
+  const { error } = await supabase.from('milestones').delete().eq('id', id);
 
   if (error) {
     throw error;

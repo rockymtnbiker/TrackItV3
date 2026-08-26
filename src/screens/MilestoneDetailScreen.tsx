@@ -3,35 +3,44 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   AppState,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
+import { useHeaderHeight } from '@react-navigation/elements';
 import { ScrollView } from 'react-native-gesture-handler';
 import { EditableOrderedRow } from '../components/EditableOrderedRow';
 import {
   FormDateRow,
+  FormDescriptionField,
   FormFieldRow,
   FormInlineInput,
   FormSelectRow,
+  FormStatusSegment,
   PERIOD_OPTIONS,
 } from '../components/FormFields';
 import {
   createHabit,
+  deleteHabit,
   getHabitsForMilestone,
-  softDeleteHabit,
   updateHabit,
 } from '../lib/habitsApi';
 import {
+  deleteMilestone,
   getMilestone,
+  setMilestoneStatus,
   updateMilestone,
 } from '../lib/milestonesApi';
-import type { GoalsStackParamList } from '../navigation/GoalsStackNavigator';
+import type { DetailStackParamList } from '../navigation/GoalsStackNavigator';
 import type {
   GoalCategory,
+  GoalStatus,
   Habit,
   Milestone,
   TargetPeriod,
@@ -39,7 +48,7 @@ import type {
 import { GOAL_CATEGORIES } from '../types';
 import { withHabitSortOrder } from '../utils/habitDrafts';
 
-type Props = NativeStackScreenProps<GoalsStackParamList, 'MilestoneDetail'>;
+type Props = NativeStackScreenProps<DetailStackParamList, 'MilestoneDetail'>;
 
 function parseOptionalTarget(value: string): number | undefined {
   const trimmed = value.trim();
@@ -52,18 +61,24 @@ function parseOptionalTarget(value: string): number | undefined {
 
 export default function MilestoneDetailScreen({ navigation, route }: Props) {
   const { milestoneId } = route.params;
+  const headerHeight = useHeaderHeight();
 
   const [milestone, setMilestone] = useState<Milestone | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
   const [category, setCategory] = useState<GoalCategory | ''>('');
   const [target, setTarget] = useState('');
   const [unit, setUnit] = useState('');
   const [period, setPeriod] = useState<TargetPeriod>('None');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const [targetStartDate, setTargetStartDate] = useState('');
+  const [targetEndDate, setTargetEndDate] = useState('');
+  const [actualStartDate, setActualStartDate] = useState('');
+  const [actualEndDate, setActualEndDate] = useState('');
+  const [status, setStatus] = useState<GoalStatus>('active');
 
   const [habits, setHabits] = useState<Habit[]>([]);
   const [newHabitTitle, setNewHabitTitle] = useState('');
@@ -76,12 +91,16 @@ export default function MilestoneDetailScreen({ navigation, route }: Props) {
 
   const applyMilestoneToDraft = useCallback((next: Milestone) => {
     setTitle(next.title);
+    setDescription(next.description ?? '');
     setCategory(next.category ?? '');
     setTarget(next.target != null ? String(next.target) : '');
     setUnit(next.unit ?? '');
     setPeriod(next.period ?? 'None');
-    setStartDate(next.startDate ?? '');
-    setEndDate(next.endDate ?? '');
+    setTargetStartDate(next.targetStartDate ?? '');
+    setTargetEndDate(next.targetEndDate ?? '');
+    setActualStartDate(next.actualStartDate ?? '');
+    setActualEndDate(next.actualEndDate ?? '');
+    setStatus(next.status);
   }, []);
 
   const loadHabits = useCallback(async () => {
@@ -119,28 +138,34 @@ export default function MilestoneDetailScreen({ navigation, route }: Props) {
 
   const draftRef = useRef({
     title,
+    description,
     category,
     target,
     unit,
     period,
-    startDate,
-    endDate,
+    targetStartDate,
+    targetEndDate,
+    actualStartDate,
+    actualEndDate,
   });
   draftRef.current = {
     title,
+    description,
     category,
     target,
     unit,
     period,
-    startDate,
-    endDate,
+    targetStartDate,
+    targetEndDate,
+    actualStartDate,
+    actualEndDate,
   };
 
   const habitsListRef = useRef(habits);
   habitsListRef.current = habits;
 
   const persistMilestone = useCallback(() => {
-    if (!milestone) {
+    if (!milestone || deleting) {
       return;
     }
 
@@ -154,17 +179,18 @@ export default function MilestoneDetailScreen({ navigation, route }: Props) {
     const optionalUnit = draft.unit.trim() || undefined;
     const optionalPeriod: TargetPeriod | undefined =
       optionalTarget != null ? draft.period : undefined;
-    const optionalStart = draft.startDate.trim() || null;
-    const optionalEnd = draft.endDate.trim() || null;
 
     void updateMilestone(milestoneId, {
       title: trimmedTitle,
+      description: draft.description.trim() || null,
       category: draft.category || null,
       target: optionalTarget ?? null,
       unit: optionalUnit ?? null,
       period: optionalPeriod ?? null,
-      startDate: optionalStart,
-      endDate: optionalEnd,
+      targetStartDate: draft.targetStartDate.trim() || null,
+      targetEndDate: draft.targetEndDate.trim() || null,
+      actualStartDate: draft.actualStartDate.trim() || null,
+      actualEndDate: draft.actualEndDate.trim() || null,
     })
       .then((updated) => {
         setMilestone(updated);
@@ -172,7 +198,46 @@ export default function MilestoneDetailScreen({ navigation, route }: Props) {
       .catch((error) => {
         console.warn('Failed to save milestone', error);
       });
-  }, [milestone, milestoneId]);
+  }, [deleting, milestone, milestoneId]);
+
+  const applyMilestoneDates = (updated: Milestone) => {
+    setMilestone(updated);
+    setStatus(updated.status);
+    setActualStartDate(updated.actualStartDate ?? '');
+    setActualEndDate(updated.actualEndDate ?? '');
+    setTargetStartDate(updated.targetStartDate ?? '');
+    setTargetEndDate(updated.targetEndDate ?? '');
+  };
+
+  const handleStatusChange = (next: GoalStatus) => {
+    setStatus(next);
+    if (!milestone || deleting) {
+      return;
+    }
+    void setMilestoneStatus(milestoneId, next)
+      .then(applyMilestoneDates)
+      .catch((error) => {
+        console.warn('Failed to update milestone status', error);
+      });
+  };
+
+  const saveMilestoneDate = (
+    field:
+      | 'targetStartDate'
+      | 'targetEndDate'
+      | 'actualStartDate'
+      | 'actualEndDate',
+    value: string,
+  ) => {
+    if (!milestone || deleting) {
+      return;
+    }
+    void updateMilestone(milestoneId, { [field]: value.trim() || null })
+      .then(applyMilestoneDates)
+      .catch((error) => {
+        console.warn('Failed to update milestone date', error);
+      });
+  };
 
   useEffect(() => {
     const unsubscribeBlur = navigation.addListener('blur', persistMilestone);
@@ -271,7 +336,7 @@ export default function MilestoneDetailScreen({ navigation, route }: Props) {
       const ordered = withHabitSortOrder(
         current.filter((item) => item.id !== id),
       );
-      void softDeleteHabit(id)
+      void deleteHabit(id)
         .then(() => persistHabitOrder(ordered))
         .catch((error) => {
           console.warn('Failed to delete habit', error);
@@ -279,6 +344,21 @@ export default function MilestoneDetailScreen({ navigation, route }: Props) {
         });
       return ordered;
     });
+  };
+
+  const confirmDeleteHabit = (id: string) => {
+    Alert.alert(
+      'Delete Habit',
+      'Are you sure you want to delete this habit? This will permanently remove all associated results.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => removeHabit(id),
+        },
+      ],
+    );
   };
 
   const addHabit = () => {
@@ -309,6 +389,43 @@ export default function MilestoneDetailScreen({ navigation, route }: Props) {
   const openHabitDetail = (habitId: string) => {
     persistMilestone();
     navigation.navigate('HabitDetail', { habitId });
+  };
+
+  const confirmDeleteMilestone = () => {
+    if (deleting || !milestone) {
+      return;
+    }
+    Alert.alert(
+      'Delete Milestone',
+      'Are you sure you want to delete this milestone? This will permanently remove all associated habits and results.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            setDeleting(true);
+            const parentGoalId = milestone.goalId;
+            void deleteMilestone(milestoneId)
+              .then(() => {
+                navigation.navigate('GoalDetail', { goalId: parentGoalId });
+              })
+              .catch((error) => {
+                console.warn('Failed to delete milestone', error);
+                Alert.alert(
+                  'Delete failed',
+                  error instanceof Error
+                    ? error.message
+                    : 'Could not delete this milestone.',
+                );
+              })
+              .finally(() => {
+                setDeleting(false);
+              });
+          },
+        },
+      ],
+    );
   };
 
   if (loading) {
@@ -344,6 +461,11 @@ export default function MilestoneDetailScreen({ navigation, route }: Props) {
   }
 
   return (
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={headerHeight}
+    >
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
@@ -359,6 +481,10 @@ export default function MilestoneDetailScreen({ navigation, route }: Props) {
               placeholder="Enter title"
             />
           </FormFieldRow>
+          <FormDescriptionField
+            value={description}
+            onChangeText={setDescription}
+          />
           <FormSelectRow
             label="Category"
             value={category}
@@ -394,8 +520,45 @@ export default function MilestoneDetailScreen({ navigation, route }: Props) {
             options={PERIOD_OPTIONS}
             onChange={(value) => setPeriod((value as TargetPeriod) || 'None')}
           />
-          <FormDateRow label="Start" value={startDate} onChange={setStartDate} />
-          <FormDateRow label="End" value={endDate} onChange={setEndDate} />
+          <FormDateRow
+            label="Target Start Date"
+            value={targetStartDate}
+            labelWidth={118}
+            onChange={(value) => {
+              setTargetStartDate(value);
+              saveMilestoneDate('targetStartDate', value);
+            }}
+          />
+          <FormDateRow
+            label="Target End Date"
+            value={targetEndDate}
+            labelWidth={118}
+            onChange={(value) => {
+              setTargetEndDate(value);
+              saveMilestoneDate('targetEndDate', value);
+            }}
+          />
+          <FormDateRow
+            label="Actual Start Date"
+            value={actualStartDate}
+            labelWidth={118}
+            onChange={(value) => {
+              setActualStartDate(value);
+              saveMilestoneDate('actualStartDate', value);
+            }}
+          />
+          <FormDateRow
+            label="Actual End Date"
+            value={actualEndDate}
+            labelWidth={118}
+            onChange={(value) => {
+              setActualEndDate(value);
+              saveMilestoneDate('actualEndDate', value);
+            }}
+          />
+          <FormFieldRow label="Status">
+            <FormStatusSegment value={status} onChange={handleStatusChange} />
+          </FormFieldRow>
         </View>
       </View>
 
@@ -408,15 +571,17 @@ export default function MilestoneDetailScreen({ navigation, route }: Props) {
             <EditableOrderedRow
               key={habit.id}
               title={habit.title}
+              parentTitle={title.trim() || undefined}
               index={index}
               isDragging={draggingId === habit.id}
               dragOffsetY={draggingId === habit.id ? dragOffsetY : 0}
               titlePlaceholder="Habit title"
               openAccessibilityLabel="Open habit"
-              deleteAccessibilityLabel="Remove habit"
+              deleteAccessibilityLabel="Delete habit"
+              swipeToDelete
               onTitleChange={(text) => updateHabitTitleLocal(habit.id, text)}
               onOpen={() => openHabitDetail(habit.id)}
-              onDelete={() => removeHabit(habit.id)}
+              onDelete={() => confirmDeleteHabit(habit.id)}
               onDragStart={() => {
                 setDraggingId(habit.id);
                 setDragOffsetY(0);
@@ -455,7 +620,24 @@ export default function MilestoneDetailScreen({ navigation, route }: Props) {
           </Pressable>
         </View>
       </View>
+
+      <Pressable
+        onPress={confirmDeleteMilestone}
+        disabled={deleting}
+        style={({ pressed }) => [
+          styles.deleteButton,
+          pressed && styles.pressed,
+          deleting && styles.deleteButtonDisabled,
+        ]}
+      >
+        {deleting ? (
+          <ActivityIndicator color="#c62828" />
+        ) : (
+          <Text style={styles.deleteButtonText}>Delete Milestone</Text>
+        )}
+      </Pressable>
     </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -465,9 +647,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#f2f2f7',
   },
   content: {
-    padding: 16,
-    paddingBottom: 40,
-    gap: 12,
+    padding: 12,
+    paddingBottom: 28,
+    gap: 8,
   },
   missing: {
     flex: 1,
@@ -496,18 +678,19 @@ const styles = StyleSheet.create({
   sectionCard: {
     backgroundColor: '#fff',
     borderRadius: 12,
-    padding: 14,
-    gap: 8,
+    padding: 10,
+    gap: 4,
+    overflow: 'visible',
   },
   fields: {
-    gap: 10,
+    gap: 6,
   },
   sectionPrompt: {
     fontSize: 15,
     fontWeight: '600',
     color: '#333',
-    marginTop: 8,
-    marginBottom: 2,
+    marginTop: 4,
+    marginBottom: 0,
   },
   emptyText: {
     fontSize: 14,
@@ -518,7 +701,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginTop: 8,
+    marginTop: 4,
   },
   addInput: {
     flex: 1,
@@ -526,11 +709,35 @@ const styles = StyleSheet.create({
     borderColor: '#ddd',
     borderRadius: 8,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 8,
     fontSize: 15,
+    minHeight: 44,
   },
   addButton: {
     padding: 6,
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteButton: {
+    marginTop: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    minHeight: 44,
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#ffcdd2',
+  },
+  deleteButtonDisabled: {
+    opacity: 0.6,
+  },
+  deleteButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#c62828',
   },
   pressed: {
     opacity: 0.7,

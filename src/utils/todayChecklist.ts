@@ -12,6 +12,8 @@ export type ChecklistItem = {
   isPlanned: boolean;
   streak?: number;
   sectionKey: string;
+  /** Parent goal or milestone title shown above the habit title. */
+  parentTitle?: string;
 };
 
 export type ChecklistSection = {
@@ -26,7 +28,7 @@ function getSectionTitle(
   goalTitles: Map<string, string>,
 ): string {
   if (sectionKey === 'standalone') {
-    return 'Standalone';
+    return 'Habits';
   }
 
   if (sectionKey.startsWith('goal:')) {
@@ -77,9 +79,26 @@ function buildSectionsFromMap(
   return [...milestoneSections, ...otherSections];
 }
 
+type HabitWithOptionalParent = Habit & {
+  parentGoal?: { title: string } | null;
+  parentMilestone?: { title: string } | null;
+};
+
+function getHabitParentTitle(habit: HabitWithOptionalParent): string | undefined {
+  if (habit.linkedGoalType === 'milestone') {
+    return habit.parentMilestone?.title || undefined;
+  }
+  if (habit.linkedGoalType === 'goal') {
+    return habit.parentGoal?.title || undefined;
+  }
+  return (
+    habit.parentMilestone?.title || habit.parentGoal?.title || undefined
+  );
+}
+
 export function buildChecklistSections(
   selectedDate: string,
-  habits: Habit[],
+  habits: HabitWithOptionalParent[],
   milestoneTitles: Map<string, string>,
   goalTitles: Map<string, string>,
   today: string,
@@ -111,6 +130,7 @@ export function buildChecklistSections(
       isPlanned: isFuture,
       streak: calculateStreak(habit.completionLog, selectedDate),
       sectionKey,
+      parentTitle: getHabitParentTitle(habit),
     });
     sectionMap.set(sectionKey, items);
   }

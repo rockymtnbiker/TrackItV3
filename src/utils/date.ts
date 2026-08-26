@@ -127,6 +127,34 @@ export function formatDate(dateString: string): string {
   });
 }
 
+/** Short month+day label (e.g. "Jul 26") for compact date ranges. */
+export function formatShortDate(dateString: string): string {
+  const date = new Date(`${dateString}T00:00:00`);
+  return date.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+/** Formats start/end as "Jul 26 – Aug 1", a single date, or undefined. */
+export function formatOptionalDateRange(
+  startDate?: string,
+  endDate?: string,
+): string | undefined {
+  const start = startDate?.trim();
+  const end = endDate?.trim();
+  if (start && end) {
+    return `${formatShortDate(start)} – ${formatShortDate(end)}`;
+  }
+  if (start) {
+    return formatShortDate(start);
+  }
+  if (end) {
+    return formatShortDate(end);
+  }
+  return undefined;
+}
+
 /** Display format for form date fields: mm/dd/yyyy. */
 export function formatDateMDY(dateString: string): string {
   if (!dateString || !/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {

@@ -4,12 +4,20 @@ import GoalsListScreen from '../screens/GoalsListScreen';
 import HabitDetailScreen from '../screens/HabitDetailScreen';
 import MilestoneDetailScreen from '../screens/MilestoneDetailScreen';
 
-export type GoalsStackParamList = {
-  GoalsList: undefined;
+/** Shared by Goals and Today stacks so detail screens can open from either tab. */
+export type DetailStackParamList = {
   GoalDetail: { goalId: string };
   MilestoneDetail: { milestoneId: string };
   HabitDetail: { habitId: string };
 };
+
+export type GoalsStackParamList = {
+  GoalsList: undefined;
+} & DetailStackParamList;
+
+export type TodayStackParamList = {
+  TodayMain: undefined;
+} & DetailStackParamList;
 
 const Stack = createNativeStackNavigator<GoalsStackParamList>();
 

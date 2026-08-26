@@ -411,7 +411,7 @@ function MilestoneRow({
   onDeleteHabit: (habit: Habit) => void;
 }) {
   const linkedHabits = linkedHabitsForMilestone(habits, milestone.id);
-  const hasDates = Boolean(milestone.startDate || milestone.endDate);
+  const hasDates = Boolean(milestone.targetStartDate || milestone.targetEndDate);
   const targetLabel = formatTargetLabel(milestone);
 
   return (
@@ -437,11 +437,11 @@ function MilestoneRow({
           <View style={styles.dateExpandRow}>
             {hasDates ? (
               <Text style={styles.milestoneDates}>
-                {milestone.startDate
-                  ? formatDate(milestone.startDate)
+                {milestone.targetStartDate
+                  ? formatDate(milestone.targetStartDate)
                   : '—'}{' '}
                 –{' '}
-                {milestone.endDate ? formatDate(milestone.endDate) : '—'}
+                {milestone.targetEndDate ? formatDate(milestone.targetEndDate) : '—'}
               </Text>
             ) : (
               <View style={styles.dateExpandSpacer} />
@@ -757,8 +757,8 @@ export default function GoalsScreen() {
           title: trimmedTitle,
           sortOrder: maxOrder + 1,
           createdDate: todayDateString(),
-          startDate: trimmedStart,
-          endDate: trimmedEnd,
+          targetStartDate: trimmedStart,
+          targetEndDate: trimmedEnd,
           category: optionalCategory,
           target: optionalTarget,
           unit: optionalUnit,
@@ -774,8 +774,8 @@ export default function GoalsScreen() {
               ? {
                   ...goal,
                   title: trimmedTitle,
-                  startDate: trimmedStart,
-                  endDate: trimmedEnd,
+                  targetStartDate: trimmedStart,
+                  targetEndDate: trimmedEnd,
                   category: optionalCategory,
                   target: optionalTarget,
                   unit: optionalUnit,
@@ -809,8 +809,8 @@ export default function GoalsScreen() {
           target: optionalTarget,
           unit: optionalUnit,
           period: optionalPeriod,
-          startDate: optionalStart,
-          endDate: optionalEnd,
+          targetStartDate: optionalStart,
+          targetEndDate: optionalEnd,
           category: optionalCategory,
           status: 'active',
           createdDate: todayDateString(),
@@ -829,8 +829,8 @@ export default function GoalsScreen() {
                   target: optionalTarget,
                   unit: optionalUnit,
                   period: optionalPeriod,
-                  startDate: optionalStart,
-                  endDate: optionalEnd,
+                  targetStartDate: optionalStart,
+                  targetEndDate: optionalEnd,
                   category: optionalCategory,
                   status: itemStatus,
                 }
@@ -1172,7 +1172,7 @@ export default function GoalsScreen() {
 
         {standaloneHabits.length > 0 ? (
           <View style={styles.standaloneSection}>
-            <Text style={styles.standaloneTitle}>Standalone Habits</Text>
+            <Text style={styles.standaloneTitle}>Habits</Text>
             <View style={styles.subList}>
               {standaloneHabits.map((habit) => (
                 <HabitListItem
@@ -1243,8 +1243,8 @@ export default function GoalsScreen() {
                   ) : null}
                   <View style={styles.dateExpandRow}>
                     <Text style={styles.goalDate}>
-                      {formatDate(goal.startDate)} –{' '}
-                      {formatDate(goal.endDate)}
+                      {goal.targetStartDate ? formatDate(goal.targetStartDate) : '—'} –{' '}
+                      {goal.targetEndDate ? formatDate(goal.targetEndDate) : '—'}
                     </Text>
                     <Pressable
                       onPress={() => toggleGoal(goal.id)}

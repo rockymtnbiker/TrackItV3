@@ -1,4 +1,14 @@
-export type GoalStatus = 'active' | 'done';
+export type GoalStatus = 'active' | 'done' | 'pending';
+
+/** Habits only support active/done — not pending. */
+export type HabitStatus = 'active' | 'done';
+
+export const GOAL_STATUS_CYCLE: GoalStatus[] = ['pending', 'active', 'done'];
+
+export function nextGoalStatus(current: GoalStatus): GoalStatus {
+  const index = GOAL_STATUS_CYCLE.indexOf(current);
+  return GOAL_STATUS_CYCLE[(index < 0 ? 0 : index + 1) % GOAL_STATUS_CYCLE.length];
+}
 
 export type GoalCategory =
   | 'Health'
@@ -50,11 +60,14 @@ export const ALL_WEEKDAYS: Weekday[] = [
 export interface Goal {
   id: string;
   title: string;
+  description?: string;
   /** Order within the top-level Goals list (0-based). */
   sortOrder: number;
   createdDate: string;
-  startDate: string;
-  endDate: string;
+  targetStartDate?: string;
+  targetEndDate?: string;
+  actualStartDate?: string;
+  actualEndDate?: string;
   category?: GoalCategory;
   target?: number;
   /** Freeform display label (e.g. "dollars", "miles", "runs"). */
@@ -68,14 +81,17 @@ export interface Milestone {
   id: string;
   goalId: string;
   title: string;
+  description?: string;
   /** Order within the parent Goal's milestones list (0-based). */
   sortOrder: number;
   target?: number;
   /** Freeform display label (e.g. "dollars", "miles", "runs"). */
   unit?: string;
   period?: TargetPeriod;
-  startDate?: string;
-  endDate?: string;
+  targetStartDate?: string;
+  targetEndDate?: string;
+  actualStartDate?: string;
+  actualEndDate?: string;
   category?: GoalCategory;
   status: GoalStatus;
   createdDate: string;
@@ -98,7 +114,7 @@ export interface Habit {
   createdDate: string;
   startDate?: string;
   endDate?: string;
-  status: GoalStatus;
+  status: HabitStatus;
   deletedAt?: string;
 }
 

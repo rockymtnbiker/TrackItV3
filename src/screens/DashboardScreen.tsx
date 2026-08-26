@@ -426,8 +426,8 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    padding: 16,
-    paddingBottom: 32,
+    padding: 12,
+    paddingBottom: 24,
   },
   loadingState: {
     flex: 1,
@@ -456,7 +456,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 16,
+    marginBottom: 10,
   },
   screenTitle: {
     fontSize: 28,
@@ -465,8 +465,8 @@ const styles = StyleSheet.create({
   },
   logoutButton: {
     padding: 4,
-    minWidth: 32,
-    minHeight: 32,
+    minWidth: 44,
+    minHeight: 44,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -479,12 +479,12 @@ const styles = StyleSheet.create({
     color: '#888',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
-    marginBottom: 8,
+    marginBottom: 4,
   },
   sectionCard: {
     backgroundColor: '#fff',
     borderRadius: 12,
-    marginBottom: 24,
+    marginBottom: 14,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.08,
@@ -493,7 +493,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   goalRow: {
-    padding: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
   },
   rowBorder: {
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -503,7 +504,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 6,
   },
   goalTitle: {
     flex: 1,
@@ -534,13 +535,14 @@ const styles = StyleSheet.create({
     borderRadius: 5,
   },
   progressRow: {
-    padding: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
   },
   progressRowHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 4,
+    marginBottom: 2,
   },
   progressRowTitle: {
     flex: 1,
@@ -562,10 +564,12 @@ const styles = StyleSheet.create({
   progressRowLabel: {
     fontSize: 12,
     color: '#888',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   streakRow: {
-    padding: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -602,7 +606,7 @@ const styles = StyleSheet.create({
     color: '#ff6b00',
   },
   emptyText: {
-    padding: 16,
+    padding: 14,
     fontSize: 14,
     color: '#aaa',
   },

@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -21,9 +22,14 @@ import {
   removeCompletion,
   type ActiveHabit,
 } from '../lib/habitsApi';
+import { getAllActiveMilestones, setMilestoneStatus } from '../lib/milestonesApi';
+import type { TodayStackParamList } from '../navigation/GoalsStackNavigator';
+import type { Milestone } from '../types';
+import { nextGoalStatus } from '../types';
 import {
   addDays,
   formatDate,
+  formatShortDate,
   getWeekDays,
   getWeekStart,
   todayDateString,
@@ -417,9 +423,11 @@ function InfiniteWeekPager({
 function ChecklistRow({
   item,
   onToggle,
+  onOpen,
 }: {
   item: ChecklistItem;
   onToggle: () => void;
+  onOpen: () => void;
 }) {
   const iconName = item.isComplete
     ? 'radio-button-on'
@@ -434,22 +442,39 @@ function ChecklistRow({
 
   return (
     <Pressable
-      onPress={item.isInteractive ? onToggle : undefined}
-      disabled={!item.isInteractive}
+      onPress={onOpen}
       style={({ pressed }) => [
         styles.checklistRow,
         item.isComplete && styles.checklistRowComplete,
         item.isPlanned && styles.checklistRowPlanned,
-        item.isInteractive && pressed && styles.pressed,
+        pressed && styles.pressed,
       ]}
     >
-      <Ionicons
-        name={iconName}
-        size={24}
-        color={iconColor}
-        style={styles.radio}
-      />
+      <Pressable
+        onPress={item.isInteractive ? onToggle : undefined}
+        disabled={!item.isInteractive}
+        hitSlop={4}
+        style={({ pressed }) => [
+          styles.radioHit,
+          item.isInteractive && pressed && styles.pressed,
+        ]}
+        accessibilityRole="checkbox"
+        accessibilityState={{
+          checked: item.isComplete,
+          disabled: !item.isInteractive,
+        }}
+        accessibilityLabel={
+          item.isComplete ? 'Mark habit incomplete' : 'Mark habit complete'
+        }
+      >
+        <Ionicons name={iconName} size={24} color={iconColor} />
+      </Pressable>
       <View style={styles.checklistContent}>
+        {item.parentTitle ? (
+          <Text style={styles.parentTitle} numberOfLines={1}>
+            {item.parentTitle}
+          </Text>
+        ) : null}
         <View style={styles.titleRow}>
           <Text
             style={[
@@ -471,6 +496,72 @@ function ChecklistRow({
   );
 }
 
+function InProgressRow({
+  milestone,
+  onOpen,
+  onToggleStatus,
+}: {
+  milestone: Milestone;
+  onOpen: () => void;
+  onToggleStatus: () => void;
+}) {
+  const isDone = milestone.status === 'done';
+  const iconName =
+    milestone.status === 'done'
+      ? 'radio-button-on'
+      : milestone.status === 'pending'
+        ? 'ellipse-outline'
+        : 'radio-button-off';
+  const iconColor =
+    milestone.status === 'done'
+      ? '#34c759'
+      : milestone.status === 'pending'
+        ? '#d1d1d6'
+        : '#c7c7cc';
+
+  return (
+    <Pressable
+      onPress={onOpen}
+      style={({ pressed }) => [
+        styles.inProgressRow,
+        isDone && styles.checklistRowComplete,
+        pressed && styles.pressed,
+      ]}
+    >
+      <Pressable
+        onPress={onToggleStatus}
+        hitSlop={4}
+        style={({ pressed }) => [
+          styles.radioHit,
+          pressed && styles.pressed,
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel={`Status ${milestone.status}. Tap to change.`}
+      >
+        <Ionicons name={iconName} size={24} color={iconColor} />
+      </Pressable>
+      <View style={styles.checklistContent}>
+        <Text
+          style={[
+            styles.checklistTitle,
+            isDone && styles.checklistTitleComplete,
+          ]}
+          numberOfLines={2}
+        >
+          {milestone.title}
+        </Text>
+        {milestone.targetEndDate ? (
+          <Text
+            style={[styles.dueLabel, isDone && styles.checklistTitleComplete]}
+          >
+            Due {formatShortDate(milestone.targetEndDate)}
+          </Text>
+        ) : null}
+      </View>
+    </Pressable>
+  );
+}
+
 function getChecklistHeading(selectedDate: string, today: string): string {
   if (selectedDate === today) {
     return 'Today';
@@ -480,6 +571,8 @@ function getChecklistHeading(selectedDate: string, today: string): string {
 }
 
 export default function TodayScreen() {
+  const navigation =
+    useNavigation<NativeStackNavigationProp<TodayStackParamList>>();
   const today = todayDateString();
   const todayWeekStart = getWeekStart(today);
 
@@ -492,6 +585,7 @@ export default function TodayScreen() {
   const listRef = useRef<FlatList<string> | null>(null);
 
   const [habits, setHabits] = useState<ActiveHabit[]>([]);
+  const [activeMilestones, setActiveMilestones] = useState<Milestone[]>([]);
   const [headerTitle, setHeaderTitle] = useState('Set a Goal to get started');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -527,15 +621,17 @@ export default function TodayScreen() {
       setLoading(true);
       setLoadError(null);
       try {
-        const [nextHabits, goals] = await Promise.all([
+        const [nextHabits, goals, milestones] = await Promise.all([
           getAllActiveHabits(),
           getGoals(),
+          getAllActiveMilestones(),
         ]);
 
         const primaryGoal = goals.find(
           (goal) => !goal.deletedAt && goal.status !== 'done',
         );
         setHeaderTitle(primaryGoal?.title ?? 'Set a Goal to get started');
+        setActiveMilestones(milestones);
 
         const completionsByHabitId = await loadCompletions(
           nextHabits,
@@ -637,6 +733,32 @@ export default function TodayScreen() {
     requestAnimationFrame(() => {
       listRef.current?.scrollToIndex({ index, animated: true });
     });
+  };
+
+  const handleMilestoneStatusCycle = (milestone: Milestone) => {
+    const next = nextGoalStatus(milestone.status);
+    setActiveMilestones((current) =>
+      current.map((item) =>
+        item.id === milestone.id ? { ...item, status: next } : item,
+      ),
+    );
+    void setMilestoneStatus(milestone.id, next)
+      .then((updated) => {
+        const todayStr = todayDateString();
+        setActiveMilestones((current) =>
+          current
+            .map((item) => (item.id === updated.id ? updated : item))
+            .filter(
+              (item) =>
+                item.status === 'active' ||
+                (item.status === 'done' && item.actualEndDate === todayStr),
+            ),
+        );
+      })
+      .catch((error) => {
+        console.warn('Failed to update milestone status', error);
+        void loadTodayData(visibleWeekStartRef.current);
+      });
   };
 
   const handleToggle = (item: ChecklistItem) => {
@@ -756,6 +878,26 @@ export default function TodayScreen() {
 
       <Text style={styles.screenTitle}>{checklistHeading}</Text>
 
+      {activeMilestones.length > 0 ? (
+        <View style={styles.sectionBlock}>
+          <Text style={styles.sectionHeader}>In Progress</Text>
+          <View style={styles.checklistCard}>
+            {activeMilestones.map((milestone) => (
+              <InProgressRow
+                key={milestone.id}
+                milestone={milestone}
+                onOpen={() =>
+                  navigation.navigate('MilestoneDetail', {
+                    milestoneId: milestone.id,
+                  })
+                }
+                onToggleStatus={() => handleMilestoneStatusCycle(milestone)}
+              />
+            ))}
+          </View>
+        </View>
+      ) : null}
+
       {totalItems > 0 ? (
         sections.map((section) => (
           <View key={section.key} style={styles.sectionBlock}>
@@ -766,6 +908,11 @@ export default function TodayScreen() {
                   key={`${checklistItem.type}-${checklistItem.id}`}
                   item={checklistItem}
                   onToggle={() => handleToggle(checklistItem)}
+                  onOpen={() =>
+                    navigation.navigate('HabitDetail', {
+                      habitId: checklistItem.id,
+                    })
+                  }
                 />
               ))}
             </View>
@@ -790,8 +937,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#f4f4f6',
   },
   content: {
-    padding: 16,
-    paddingBottom: 32,
+    padding: 12,
+    paddingBottom: 24,
   },
   loadingState: {
     flex: 1,
@@ -823,14 +970,14 @@ const styles = StyleSheet.create({
     color: '#111',
     textAlign: 'center',
     lineHeight: 34,
-    marginBottom: 20,
+    marginBottom: 12,
     paddingHorizontal: 8,
   },
   weekHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 10,
+    marginBottom: 6,
     minHeight: 28,
   },
   weekLabel: {
@@ -850,7 +997,7 @@ const styles = StyleSheet.create({
     color: '#007aff',
   },
   weekPager: {
-    marginBottom: 24,
+    marginBottom: 14,
     minHeight: 64,
   },
   weekStrip: {
@@ -860,9 +1007,11 @@ const styles = StyleSheet.create({
   weekDayCell: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: 10,
+    paddingVertical: 8,
     borderRadius: 10,
     backgroundColor: '#fff',
+    minHeight: 44,
+    justifyContent: 'center',
   },
   weekDayCellToday: {
     backgroundColor: '#007aff',
@@ -881,7 +1030,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#888',
-    marginBottom: 4,
+    marginBottom: 2,
   },
   weekDayNumber: {
     fontSize: 16,
@@ -898,16 +1047,16 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '700',
     color: '#111',
-    marginBottom: 12,
+    marginBottom: 8,
   },
   sectionBlock: {
-    marginBottom: 16,
+    marginBottom: 10,
   },
   sectionHeader: {
     fontSize: 15,
     fontWeight: '600',
     color: '#555',
-    marginBottom: 8,
+    marginBottom: 4,
     paddingHorizontal: 4,
   },
   checklistCard: {
@@ -922,9 +1071,19 @@ const styles = StyleSheet.create({
   },
   checklistRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    paddingHorizontal: 14,
-    paddingVertical: 14,
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    minHeight: 44,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e5e5ea',
+  },
+  inProgressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    minHeight: 44,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#e5e5ea',
   },
@@ -934,12 +1093,21 @@ const styles = StyleSheet.create({
   checklistRowPlanned: {
     opacity: 0.85,
   },
-  radio: {
-    marginRight: 12,
-    marginTop: 1,
+  radioHit: {
+    width: 44,
+    height: 44,
+    marginRight: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   checklistContent: {
     flex: 1,
+  },
+  parentTitle: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#888',
+    marginBottom: 1,
   },
   titleRow: {
     flexDirection: 'row',
@@ -958,6 +1126,11 @@ const styles = StyleSheet.create({
   },
   checklistTitlePlanned: {
     color: '#666',
+  },
+  dueLabel: {
+    fontSize: 13,
+    color: '#888',
+    marginTop: 2,
   },
   plannedLabel: {
     fontSize: 11,
@@ -986,7 +1159,7 @@ const styles = StyleSheet.create({
   emptyCard: {
     backgroundColor: '#fff',
     borderRadius: 12,
-    padding: 20,
+    padding: 16,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.08,

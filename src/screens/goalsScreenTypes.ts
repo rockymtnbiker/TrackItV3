@@ -127,8 +127,8 @@ export function populateFormFromItem(
     return {
       ...empty,
       title: goal.title,
-      startDate: goal.startDate,
-      endDate: goal.endDate,
+      startDate: goal.targetStartDate ?? '',
+      endDate: goal.targetEndDate ?? '',
       category: goal.category ?? '',
       target: goal.target != null ? String(goal.target) : '',
       unit: goal.unit ?? '',
@@ -146,8 +146,8 @@ export function populateFormFromItem(
     return {
       ...empty,
       title: milestone.title,
-      startDate: milestone.startDate ?? '',
-      endDate: milestone.endDate ?? '',
+      startDate: milestone.targetStartDate ?? '',
+      endDate: milestone.targetEndDate ?? '',
       category: milestone.category ?? '',
       target: milestone.target != null ? String(milestone.target) : '',
       unit: milestone.unit ?? '',

@@ -1,8 +1,12 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useHeaderHeight } from '@react-navigation/elements';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   AppState,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -16,20 +20,22 @@ import {
   FormScheduledDaysBlock,
   formFieldStyles,
 } from '../components/FormFields';
-import { getHabit, updateHabit } from '../lib/habitsApi';
-import type { GoalsStackParamList } from '../navigation/GoalsStackNavigator';
+import { deleteHabit, getHabit, updateHabit } from '../lib/habitsApi';
+import type { DetailStackParamList } from '../navigation/GoalsStackNavigator';
 import type { Habit, Weekday } from '../types';
 import { ALL_WEEKDAYS } from '../types';
 import { WEEKDAYS } from '../utils/date';
 
-type Props = NativeStackScreenProps<GoalsStackParamList, 'HabitDetail'>;
+type Props = NativeStackScreenProps<DetailStackParamList, 'HabitDetail'>;
 
 export default function HabitDetailScreen({ navigation, route }: Props) {
   const { habitId } = route.params;
+  const headerHeight = useHeaderHeight();
 
   const [habit, setHabit] = useState<Habit | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const [title, setTitle] = useState('');
   const [scheduledDays, setScheduledDays] = useState<Weekday[]>([
@@ -84,7 +90,7 @@ export default function HabitDetailScreen({ navigation, route }: Props) {
   };
 
   const persist = useCallback(() => {
-    if (!habit) {
+    if (!habit || deleting) {
       return;
     }
 
@@ -112,7 +118,7 @@ export default function HabitDetailScreen({ navigation, route }: Props) {
       .catch((error) => {
         console.warn('Failed to save habit', error);
       });
-  }, [habit, habitId]);
+  }, [deleting, habit, habitId]);
 
   useEffect(() => {
     const unsubscribeBlur = navigation.addListener('blur', persist);
@@ -143,6 +149,42 @@ export default function HabitDetailScreen({ navigation, route }: Props) {
       current.includes(day)
         ? current.filter((entry) => entry !== day)
         : [...current, day],
+    );
+  };
+
+  const confirmDeleteHabit = () => {
+    if (deleting) {
+      return;
+    }
+    Alert.alert(
+      'Delete Habit',
+      'Are you sure you want to delete this habit? This will permanently remove all associated results.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            setDeleting(true);
+            void deleteHabit(habitId)
+              .then(() => {
+                navigation.goBack();
+              })
+              .catch((error) => {
+                console.warn('Failed to delete habit', error);
+                Alert.alert(
+                  'Delete failed',
+                  error instanceof Error
+                    ? error.message
+                    : 'Could not delete this habit.',
+                );
+              })
+              .finally(() => {
+                setDeleting(false);
+              });
+          },
+        },
+      ],
     );
   };
 
@@ -177,6 +219,11 @@ export default function HabitDetailScreen({ navigation, route }: Props) {
   }
 
   return (
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={headerHeight}
+    >
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
@@ -208,7 +255,24 @@ export default function HabitDetailScreen({ navigation, route }: Props) {
           <FormDateRow label="End" value={endDate} onChange={setEndDate} />
         </View>
       </View>
+
+      <Pressable
+        onPress={confirmDeleteHabit}
+        disabled={deleting}
+        style={({ pressed }) => [
+          styles.deleteButton,
+          pressed && styles.pressed,
+          deleting && styles.deleteButtonDisabled,
+        ]}
+      >
+        {deleting ? (
+          <ActivityIndicator color="#c62828" />
+        ) : (
+          <Text style={styles.deleteButtonText}>Delete Habit</Text>
+        )}
+      </Pressable>
     </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -218,9 +282,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#f2f2f7',
   },
   content: {
-    padding: 16,
-    paddingBottom: 40,
-    gap: 12,
+    padding: 12,
+    paddingBottom: 28,
+    gap: 8,
   },
   missing: {
     flex: 1,
@@ -249,11 +313,30 @@ const styles = StyleSheet.create({
   sectionCard: {
     backgroundColor: '#fff',
     borderRadius: 12,
-    padding: 14,
-    gap: 8,
+    padding: 10,
+    gap: 6,
   },
   fields: {
-    gap: 10,
+    gap: 6,
+  },
+  deleteButton: {
+    marginTop: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    minHeight: 44,
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#ffcdd2',
+  },
+  deleteButtonDisabled: {
+    opacity: 0.6,
+  },
+  deleteButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#c62828',
   },
   pressed: {
     opacity: 0.7,
