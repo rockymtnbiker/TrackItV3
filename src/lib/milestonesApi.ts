@@ -45,6 +45,13 @@ export type MilestoneInput = {
 
 export type MilestoneUpdates = Partial<Omit<MilestoneInput, 'goalId'>>;
 
+function toDateOnly(value: string | null | undefined): string | undefined {
+  if (value == null || value === '') {
+    return undefined;
+  }
+  return String(value).slice(0, 10);
+}
+
 function mapRowToMilestone(row: MilestoneRow): Milestone {
   const target =
     row.target == null || row.target === ''
@@ -57,17 +64,17 @@ function mapRowToMilestone(row: MilestoneRow): Milestone {
     title: row.title,
     description: row.description || undefined,
     sortOrder: row.sort_order ?? 0,
-    createdDate: (row.created_date ?? '').slice(0, 10),
-    targetStartDate: row.target_start_date || undefined,
-    targetEndDate: row.target_end_date || undefined,
-    actualStartDate: row.actual_start_date || undefined,
-    actualEndDate: row.actual_end_date || undefined,
+    createdDate: toDateOnly(row.created_date) ?? '',
+    targetStartDate: toDateOnly(row.target_start_date),
+    targetEndDate: toDateOnly(row.target_end_date),
+    actualStartDate: toDateOnly(row.actual_start_date),
+    actualEndDate: toDateOnly(row.actual_end_date),
     category: (row.category as GoalCategory | null) || undefined,
     target: Number.isFinite(target) ? target : undefined,
     unit: row.unit || undefined,
     period: (row.period as TargetPeriod | null) || undefined,
     status: (row.status as GoalStatus) || 'active',
-    deletedAt: row.deleted_at ? row.deleted_at.slice(0, 10) : undefined,
+    deletedAt: toDateOnly(row.deleted_at),
   };
 }
 
@@ -158,7 +165,18 @@ export async function getMilestones(): Promise<Milestone[]> {
   return (data as MilestoneRow[] | null)?.map(mapRowToMilestone) ?? [];
 }
 
-/** Active milestones, plus milestones marked done today (still shown on Today). */
+/** Visible on Today's In Progress: active, or actual_end_date is today. */
+export function isInProgressMilestone(
+  milestone: Pick<Milestone, 'status' | 'actualEndDate'>,
+  today: string = todayDateString(),
+): boolean {
+  if (milestone.status === 'active') {
+    return true;
+  }
+  return toDateOnly(milestone.actualEndDate) === today;
+}
+
+/** Active milestones, plus any with actual_end_date = today (even if pending). */
 export async function getAllActiveMilestones(): Promise<Milestone[]> {
   const userId = await requireUserId();
   const today = todayDateString();
@@ -167,9 +185,7 @@ export async function getAllActiveMilestones(): Promise<Milestone[]> {
     .select('*')
     .eq('user_id', userId)
     .is('deleted_at', null)
-    .or(
-      `status.eq.active,and(status.eq.done,actual_end_date.eq.${today})`,
-    )
+    .or(`status.eq.active,actual_end_date.eq.${today}`)
     .order('sort_order', { ascending: true });
 
   if (error) {
@@ -254,7 +270,7 @@ export async function updateMilestone(
  * Updates status and auto-manages actual dates:
  * - active: set actual_start_date to today if null; clear actual_end_date if set
  * - done: set actual_end_date to today
- * - pending: no automatic date changes
+ * - pending: status only — leave actual_start_date and actual_end_date untouched
  */
 export async function setMilestoneStatus(
   id: string,
@@ -289,6 +305,7 @@ export async function setMilestoneStatus(
   } else if (newStatus === 'done') {
     updates.actual_end_date = today;
   }
+  // pending: do not modify actual_start_date or actual_end_date
 
   const { data, error } = await supabase
     .from('milestones')

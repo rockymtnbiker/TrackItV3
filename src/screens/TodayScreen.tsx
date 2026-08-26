@@ -14,6 +14,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
+import { PendingStatusCircle } from '../components/PendingStatusCircle';
 import { getGoals } from '../lib/goalsApi';
 import {
   addCompletion,
@@ -22,7 +23,7 @@ import {
   removeCompletion,
   type ActiveHabit,
 } from '../lib/habitsApi';
-import { getAllActiveMilestones, setMilestoneStatus } from '../lib/milestonesApi';
+import { getAllActiveMilestones, isInProgressMilestone, setMilestoneStatus } from '../lib/milestonesApi';
 import type { TodayStackParamList } from '../navigation/GoalsStackNavigator';
 import type { Milestone } from '../types';
 import { nextGoalStatus } from '../types';
@@ -506,18 +507,7 @@ function InProgressRow({
   onToggleStatus: () => void;
 }) {
   const isDone = milestone.status === 'done';
-  const iconName =
-    milestone.status === 'done'
-      ? 'radio-button-on'
-      : milestone.status === 'pending'
-        ? 'ellipse-outline'
-        : 'radio-button-off';
-  const iconColor =
-    milestone.status === 'done'
-      ? '#34c759'
-      : milestone.status === 'pending'
-        ? '#d1d1d6'
-        : '#c7c7cc';
+  const isPending = milestone.status === 'pending';
 
   return (
     <Pressable
@@ -538,13 +528,20 @@ function InProgressRow({
         accessibilityRole="button"
         accessibilityLabel={`Status ${milestone.status}. Tap to change.`}
       >
-        <Ionicons name={iconName} size={24} color={iconColor} />
+        {isDone ? (
+          <Ionicons name="radio-button-on" size={24} color="#34c759" />
+        ) : isPending ? (
+          <PendingStatusCircle size={20} color="#b0b0b5" />
+        ) : (
+          <Ionicons name="radio-button-off" size={24} color="#c7c7cc" />
+        )}
       </Pressable>
       <View style={styles.checklistContent}>
         <Text
           style={[
             styles.checklistTitle,
             isDone && styles.checklistTitleComplete,
+            isPending && styles.checklistTitlePending,
           ]}
           numberOfLines={2}
         >
@@ -552,7 +549,11 @@ function InProgressRow({
         </Text>
         {milestone.targetEndDate ? (
           <Text
-            style={[styles.dueLabel, isDone && styles.checklistTitleComplete]}
+            style={[
+              styles.dueLabel,
+              isDone && styles.checklistTitleComplete,
+              isPending && styles.dueLabelPending,
+            ]}
           >
             Due {formatShortDate(milestone.targetEndDate)}
           </Text>
@@ -737,22 +738,51 @@ export default function TodayScreen() {
 
   const handleMilestoneStatusCycle = (milestone: Milestone) => {
     const next = nextGoalStatus(milestone.status);
+    const todayStr = todayDateString();
+
     setActiveMilestones((current) =>
-      current.map((item) =>
-        item.id === milestone.id ? { ...item, status: next } : item,
-      ),
+      current
+        .map((item) => {
+          if (item.id !== milestone.id) {
+            return item;
+          }
+          if (next === 'done') {
+            return { ...item, status: next, actualEndDate: todayStr };
+          }
+          if (next === 'active') {
+            return {
+              ...item,
+              status: next,
+              actualEndDate: undefined,
+              actualStartDate: item.actualStartDate ?? todayStr,
+            };
+          }
+          // pending: keep actualStartDate / actualEndDate as-is
+          return { ...item, status: next };
+        })
+        .filter((item) => isInProgressMilestone(item, todayStr)),
     );
+
     void setMilestoneStatus(milestone.id, next)
       .then((updated) => {
-        const todayStr = todayDateString();
         setActiveMilestones((current) =>
           current
-            .map((item) => (item.id === updated.id ? updated : item))
-            .filter(
-              (item) =>
-                item.status === 'active' ||
-                (item.status === 'done' && item.actualEndDate === todayStr),
-            ),
+            .map((item) => {
+              if (item.id !== updated.id) {
+                return item;
+              }
+              // Prefer server row, but never drop today's actualEndDate on pending
+              // if the response omitted/normalized it away.
+              if (
+                updated.status === 'pending' &&
+                !updated.actualEndDate &&
+                item.actualEndDate
+              ) {
+                return { ...updated, actualEndDate: item.actualEndDate };
+              }
+              return updated;
+            })
+            .filter((item) => isInProgressMilestone(item, todayStr)),
         );
       })
       .catch((error) => {
@@ -1124,6 +1154,11 @@ const styles = StyleSheet.create({
     color: '#888',
     textDecorationLine: 'line-through',
   },
+  checklistTitlePending: {
+    color: '#999',
+    fontStyle: 'italic',
+    fontWeight: '500',
+  },
   checklistTitlePlanned: {
     color: '#666',
   },
@@ -1131,6 +1166,10 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#888',
     marginTop: 2,
+  },
+  dueLabelPending: {
+    color: '#aaa',
+    fontStyle: 'italic',
   },
   plannedLabel: {
     fontSize: 11,

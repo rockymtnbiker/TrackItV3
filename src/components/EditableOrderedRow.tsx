@@ -7,6 +7,7 @@ import {
   DEFAULT_DRAGGABLE_ITEM_HEIGHT,
   DraggableItem,
 } from './DraggableItem';
+import { PendingStatusCircle } from './PendingStatusCircle';
 
 export { DEFAULT_DRAGGABLE_ITEM_HEIGHT as ORDERED_ROW_HEIGHT };
 
@@ -52,12 +53,12 @@ function rowHeightFor(parentTitle?: string, subtitle?: string): number {
 function statusIcon(status: GoalStatus): {
   name: keyof typeof Ionicons.glyphMap;
   color: string;
-} {
+} | null {
   if (status === 'done') {
     return { name: 'radio-button-on', color: '#34c759' };
   }
   if (status === 'pending') {
-    return { name: 'ellipse-outline', color: '#d1d1d6' };
+    return null;
   }
   return { name: 'radio-button-off', color: '#c7c7cc' };
 }
@@ -114,6 +115,7 @@ export function EditableOrderedRow({
   };
 
   const icon = status ? statusIcon(status) : null;
+  const isPending = status === 'pending';
 
   const row = (
     <DraggableItem
@@ -135,7 +137,11 @@ export function EditableOrderedRow({
           accessibilityRole="button"
           accessibilityLabel={`Status ${status}. Tap to change.`}
         >
-          <Ionicons name={icon!.name} size={22} color={icon!.color} />
+          {isPending ? (
+            <PendingStatusCircle size={18} color="#b0b0b5" />
+          ) : (
+            <Ionicons name={icon!.name} size={22} color={icon!.color} />
+          )}
         </Pressable>
       ) : null}
 
@@ -151,7 +157,11 @@ export function EditableOrderedRow({
         ) : null}
         <TextInput
           ref={inputRef}
-          style={[styles.titleInput, isDone && styles.titleDone]}
+          style={[
+            styles.titleInput,
+            isDone && styles.titleDone,
+            isPending && styles.titlePending,
+          ]}
           value={title}
           onChangeText={onTitleChange}
           placeholder={titlePlaceholder}
@@ -161,7 +171,13 @@ export function EditableOrderedRow({
           pointerEvents={editingTitle ? 'auto' : 'none'}
         />
         {subtitle ? (
-          <Text style={[styles.subtitle, isDone && styles.subtitleDone]}>
+          <Text
+            style={[
+              styles.subtitle,
+              isDone && styles.subtitleDone,
+              isPending && styles.subtitlePending,
+            ]}
+          >
             {subtitle}
           </Text>
         ) : null}
@@ -260,6 +276,10 @@ const styles = StyleSheet.create({
     color: '#888',
     textDecorationLine: 'line-through',
   },
+  titlePending: {
+    color: '#999',
+    fontStyle: 'italic',
+  },
   subtitle: {
     fontSize: 12,
     color: '#888',
@@ -268,6 +288,10 @@ const styles = StyleSheet.create({
   },
   subtitleDone: {
     color: '#aaa',
+  },
+  subtitlePending: {
+    color: '#aaa',
+    fontStyle: 'italic',
   },
   iconButton: {
     paddingHorizontal: 2,
