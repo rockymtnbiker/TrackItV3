@@ -104,9 +104,6 @@ export default function TabNavigator() {
           textTransform: 'none',
           marginTop: 2,
         },
-        tabBarIconStyle: {
-          marginTop: 2,
-        },
       }}
     >
       <Tab.Screen
@@ -119,6 +116,7 @@ export default function TabNavigator() {
               name={focused ? 'calendar' : 'calendar-outline'}
               size={24}
               color={color}
+              style={styles.tabIcon}
             />
           ),
         }}
@@ -133,6 +131,7 @@ export default function TabNavigator() {
               name={focused ? 'flag' : 'flag-outline'}
               size={24}
               color={color}
+              style={styles.tabIcon}
             />
           ),
         }}
@@ -147,6 +146,7 @@ export default function TabNavigator() {
               name={focused ? 'stats-chart' : 'stats-chart-outline'}
               size={24}
               color={color}
+              style={styles.tabIcon}
             />
           ),
         }}
@@ -154,3 +154,9 @@ export default function TabNavigator() {
     </Tab.Navigator>
   );
 }
+
+const styles = StyleSheet.create({
+  tabIcon: {
+    marginTop: 2,
+  },
+});

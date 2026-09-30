@@ -888,7 +888,6 @@ export default function GoalsScreen() {
                   weeklyTarget: orderedDays.length,
                   startDate: trimmedStart,
                   endDate: trimmedEnd,
-                  status: itemStatus,
                 }
               : habit,
           ),
