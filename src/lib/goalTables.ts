@@ -1,8 +1,7 @@
 import type { TargetPeriod, Weekday } from '../types';
 import { ALL_WEEKDAYS } from '../types';
 
-/** Rename target: change these two lines when goals_v2 becomes goals. */
-export const GOALS_TABLE = 'goals_v2';
+export const GOALS_TABLE = 'goals';
 export const ENTRIES_TABLE = 'goal_entries';
 
 export type GoalsV2Row = {
