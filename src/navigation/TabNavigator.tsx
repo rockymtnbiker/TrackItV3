@@ -7,6 +7,7 @@ import DashboardScreen from '../screens/DashboardScreen';
 import GoalDetailScreen from '../screens/GoalDetailScreen';
 import HabitDetailScreen from '../screens/HabitDetailScreen';
 import MilestoneDetailScreen from '../screens/MilestoneDetailScreen';
+import StepDetailScreen from '../screens/StepDetailScreen';
 import TodayScreen from '../screens/TodayScreen';
 import GoalsStackNavigator, {
   type TodayStackParamList,
@@ -47,6 +48,11 @@ function TodayStackNavigator() {
         name="GoalDetail"
         component={GoalDetailScreen}
         options={{ title: 'Goal' }}
+      />
+      <TodayStack.Screen
+        name="StepDetail"
+        component={StepDetailScreen}
+        options={{ title: 'Step' }}
       />
     </TodayStack.Navigator>
   );

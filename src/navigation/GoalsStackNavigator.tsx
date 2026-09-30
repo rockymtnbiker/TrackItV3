@@ -19,6 +19,7 @@ export type GoalsStackParamList = {
 
 export type TodayStackParamList = {
   TodayMain: undefined;
+  StepDetail: { goalId: string };
 } & DetailStackParamList;
 
 const Stack = createNativeStackNavigator<GoalsStackParamList>();

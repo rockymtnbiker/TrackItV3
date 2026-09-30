@@ -14,276 +14,208 @@ import { Pressable, ScrollView, Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { DraggableItem } from '../components/DraggableItem';
 import { KeyboardSafe } from '../components/KeyboardSafe';
+import { FormFieldRow, FormInlineInput } from '../components/FormFields';
 import {
-  FormDateRow,
-  FormFieldRow,
-  FormInlineInput,
-  FormSelectRow,
-  PERIOD_OPTIONS,
-} from '../components/FormFields';
-import { createGoal as createGoalApi, getGoals, updateGoal } from '../lib/goalsApi';
+  createGoalNode,
+  deleteGoalNode,
+  getAllGoalNodes,
+  getEntries,
+  reorderGoalNodes,
+} from '../lib/goalTreeApi';
 import {
-  createHabit as createHabitApi,
-  deleteHabit,
-  getStandaloneHabits,
-  updateHabit,
-} from '../lib/habitsApi';
+  buildChildrenMap,
+  isRepeating,
+  isTracked,
+  rollupTotal,
+} from '../lib/goalTree';
 import type { GoalsStackParamList } from '../navigation/GoalsStackNavigator';
-import type {
-  Goal,
-  GoalCategory,
-  GoalStatus,
-  Habit,
-  TargetPeriod,
-} from '../types';
-import { GOAL_CATEGORIES } from '../types';
-import { formatDate, todayDateString } from '../utils/date';
-import { withGoalSortOrder, withHabitSortOrder } from '../utils/habitDrafts';
+import type { GoalEntry, GoalNode } from '../types/goalNode';
 
 type Props = NativeStackScreenProps<GoalsStackParamList, 'GoalsList'>;
 
-/** Approximate Goal/Habit card height (padding + title + meta + margin). */
+/** Approximate goal card height (padding + title + meta + margin). */
 const LIST_CARD_HEIGHT = 72;
 const SWIPE_DELETE_WIDTH = 72;
 
-function parseOptionalTarget(value: string): number | undefined {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return undefined;
+function descendantIds(rootId: string, nodes: GoalNode[]): string[] {
+  const childrenMap = buildChildrenMap(nodes);
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  const stack = [...(childrenMap.get(rootId) ?? [])];
+
+  while (stack.length > 0) {
+    const child = stack.pop();
+    if (!child || seen.has(child.id)) {
+      continue;
+    }
+    seen.add(child.id);
+    ids.push(child.id);
+    for (const grandchild of childrenMap.get(child.id) ?? []) {
+      stack.push(grandchild);
+    }
   }
-  const parsed = Number(trimmed);
-  return Number.isFinite(parsed) ? parsed : undefined;
+
+  return ids;
 }
 
-function cycleGoalStatus(status: GoalStatus): GoalStatus {
-  return status === 'active' ? 'done' : 'active';
+function deleteMessage(count: number): string {
+  if (count <= 0) {
+    return 'This goal will be deleted.';
+  }
+  if (count === 1) {
+    return 'This goal and 1 sub-step will be deleted.';
+  }
+  return `This goal and ${count} sub-steps will be deleted.`;
+}
+
+function cardSubtitle(
+  node: GoalNode,
+  nodes: GoalNode[],
+  entries: GoalEntry[],
+  childrenMap: Map<string | null, GoalNode[]>,
+): string {
+  if (isRepeating(node)) {
+    const amount = node.targetAmount != null ? String(node.targetAmount) : '—';
+    const unit = node.unit ?? 'times';
+    const period = node.repeatPeriod === 'month' ? 'month' : 'week';
+    return `${amount} ${unit} / ${period}`;
+  }
+
+  if (isTracked(node)) {
+    const total = rollupTotal(node, nodes, entries) ?? 0;
+    const amount = node.targetAmount != null ? String(node.targetAmount) : '—';
+    return `${total} / ${amount} ${node.unit}`;
+  }
+
+  const children = childrenMap.get(node.id) ?? [];
+  if (children.length === 0) {
+    return '';
+  }
+
+  const doneCount = children.filter((child) => child.status === 'done').length;
+  const activeCount = children.filter((child) => child.status === 'active').length;
+  return `${doneCount} done · ${activeCount} active`;
 }
 
 export default function GoalsListScreen({ navigation }: Props) {
-  const [goals, setGoals] = useState<Goal[]>([]);
-  const [habits, setHabits] = useState<Habit[]>([]);
-  const [goalsLoading, setGoalsLoading] = useState(true);
-  const [habitsLoading, setHabitsLoading] = useState(true);
-  const [goalsError, setGoalsError] = useState<string | null>(null);
-  const [habitsError, setHabitsError] = useState<string | null>(null);
-  const [creatingGoal, setCreatingGoal] = useState(false);
-  const [creatingHabit, setCreatingHabit] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
-  const [typePickerVisible, setTypePickerVisible] = useState(false);
+  const [nodes, setNodes] = useState<GoalNode[]>([]);
+  const [entries, setEntries] = useState<GoalEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [createVisible, setCreateVisible] = useState(false);
   const [title, setTitle] = useState('');
-  const [category, setCategory] = useState<GoalCategory | ''>('');
-  const [target, setTarget] = useState('');
-  const [unit, setUnit] = useState('');
-  const [period, setPeriod] = useState<TargetPeriod>('None');
-  const [startDate, setStartDate] = useState(todayDateString());
-  const [endDate, setEndDate] = useState('');
-  const [status, setStatus] = useState<GoalStatus>('active');
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
 
-  const loadGoals = useCallback(async () => {
-    setGoalsLoading(true);
-    setGoalsError(null);
+  const load = useCallback(async () => {
+    setLoadError(null);
     try {
-      const next = await getGoals();
-      setGoals(next);
+      const nextNodes = await getAllGoalNodes();
+      const ids = nextNodes.map((node) => node.id);
+      const nextEntries = ids.length > 0 ? await getEntries(ids) : [];
+      setNodes(nextNodes);
+      setEntries(nextEntries);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Failed to load goals.';
-      setGoalsError(message);
+      setLoadError(message);
     } finally {
-      setGoalsLoading(false);
-    }
-  }, []);
-
-  const loadHabits = useCallback(async () => {
-    setHabitsLoading(true);
-    setHabitsError(null);
-    try {
-      const next = await getStandaloneHabits();
-      setHabits(next);
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Failed to load habits.';
-      setHabitsError(message);
-    } finally {
-      setHabitsLoading(false);
+      setLoading(false);
     }
   }, []);
 
   useFocusEffect(
     useCallback(() => {
-      void loadGoals();
-      void loadHabits();
-    }, [loadGoals, loadHabits]),
+      void load();
+    }, [load]),
   );
 
-  const visibleGoals = useMemo(
+  const childrenMap = useMemo(() => buildChildrenMap(nodes), [nodes]);
+  const visibleNodes = useMemo(
     () =>
-      goals
-        .filter((goal) => !goal.deletedAt && goal.status !== 'done')
+      nodes
+        .filter((node) => node.parentId == null)
         .sort((a, b) => a.sortOrder - b.sortOrder),
-    [goals],
+    [nodes],
   );
+  const listRef = useRef(visibleNodes);
+  listRef.current = visibleNodes;
 
-  const visibleHabits = useMemo(
-    () =>
-      habits
-        .filter((habit) => !habit.deletedAt && habit.status !== 'done')
-        .sort((a, b) => a.sortOrder - b.sortOrder),
-    [habits],
-  );
-  const goalsListRef = useRef(visibleGoals);
-  goalsListRef.current = visibleGoals;
-  const habitsListRef = useRef(visibleHabits);
-  habitsListRef.current = visibleHabits;
-
-  const openTypePicker = () => setTypePickerVisible(true);
-
-  const openCreateGoal = () => {
-    setTypePickerVisible(false);
+  const openCreate = () => {
     setTitle('');
-    setCategory('');
-    setTarget('');
-    setUnit('');
-    setPeriod('None');
-    setStartDate(todayDateString());
-    setEndDate('');
-    setStatus('active');
     setCreateError(null);
     setCreateVisible(true);
   };
 
-  const handleCreateGoal = async () => {
-    if (!title.trim() || !startDate.trim() || !endDate.trim() || creatingGoal) {
+  const handleCreate = async () => {
+    const trimmed = title.trim();
+    if (!trimmed || creating) {
       return;
     }
 
-    const optionalTarget = parseOptionalTarget(target);
-    const maxOrder = visibleGoals.reduce(
-      (max, goal) => Math.max(max, goal.sortOrder),
-      -1,
-    );
-
-    setCreatingGoal(true);
+    setCreating(true);
     setCreateError(null);
     try {
-      const created = await createGoalApi({
-        title: title.trim(),
-        sortOrder: maxOrder + 1,
-        targetStartDate: startDate.trim(),
-        targetEndDate: endDate.trim(),
-        category: category || undefined,
-        target: optionalTarget,
-        unit: unit.trim() || undefined,
-        period: optionalTarget != null ? period : undefined,
-        status,
+      const created = await createGoalNode({
+        title: trimmed,
+        parentId: null,
       });
       setCreateVisible(false);
-      await loadGoals();
-      navigation.navigate('GoalDetail', { goalId: created.id });
+      navigation.push('StepDetail', { goalId: created.id });
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Failed to create goal.';
       setCreateError(message);
     } finally {
-      setCreatingGoal(false);
+      setCreating(false);
     }
   };
 
-  const createHabitFromPicker = async () => {
-    if (creatingHabit) {
-      return;
-    }
-    setTypePickerVisible(false);
-    const maxOrder = visibleHabits.reduce(
-      (max, item) => Math.max(max, item.sortOrder),
-      -1,
-    );
-    setCreatingHabit(true);
-    try {
-      const created = await createHabitApi({
-        title: '',
-        goalId: null,
-        milestoneId: null,
-        sortOrder: maxOrder + 1,
-        status: 'active',
-      });
-      setHabits((current) => [...current, created]);
-      navigation.navigate('HabitDetail', { habitId: created.id });
-    } catch (error) {
-      console.warn('Failed to create habit', error);
-      void loadHabits();
-    } finally {
-      setCreatingHabit(false);
-    }
-  };
-
-  const reorderGoals = (fromIndex: number, toIndex: number) => {
+  const reorderNodes = (fromIndex: number, toIndex: number) => {
     if (fromIndex === toIndex) {
       return;
     }
-    const ordered = [...visibleGoals];
+    const ordered = [...visibleNodes];
     const [moved] = ordered.splice(fromIndex, 1);
+    if (!moved) {
+      return;
+    }
     ordered.splice(toIndex, 0, moved);
-    const withOrder = withGoalSortOrder(ordered);
-    setGoals((current) => {
-      const byId = new Map(withOrder.map((item) => [item.id, item]));
-      return current.map((item) => byId.get(item.id) ?? item);
-    });
-    void Promise.all(
-      withOrder.map((goal) =>
-        updateGoal(goal.id, { sortOrder: goal.sortOrder }),
-      ),
-    ).catch((error) => {
+    const withOrder = ordered.map((node, index) => ({
+      ...node,
+      sortOrder: index,
+    }));
+    const byId = new Map(withOrder.map((node) => [node.id, node]));
+    setNodes((current) =>
+      current.map((node) => byId.get(node.id) ?? node),
+    );
+    void reorderGoalNodes(withOrder.map((node) => node.id)).catch((error) => {
       console.warn('Failed to persist goal order', error);
-      void loadGoals();
+      void load();
     });
   };
 
-  const reorderHabits = (fromIndex: number, toIndex: number) => {
-    if (fromIndex === toIndex) {
-      return;
-    }
-    const ordered = [...visibleHabits];
-    const [moved] = ordered.splice(fromIndex, 1);
-    ordered.splice(toIndex, 0, moved);
-    const withOrder = withHabitSortOrder(ordered);
-    setHabits((current) => {
-      const byId = new Map(withOrder.map((item) => [item.id, item]));
-      return current.map((item) => byId.get(item.id) ?? item);
-    });
-    void Promise.all(
-      withOrder.map((habit) =>
-        updateHabit(habit.id, { sortOrder: habit.sortOrder }),
-      ),
-    ).catch((error) => {
-      console.warn('Failed to persist habit order', error);
-      void loadHabits();
-    });
-  };
-
-  const removeHabit = (id: string) => {
-    setHabits((current) => current.filter((item) => item.id !== id));
-    void deleteHabit(id).catch((error) => {
-      console.warn('Failed to delete habit', error);
-      void loadHabits();
-    });
-  };
-
-  const confirmDeleteHabit = (id: string) => {
-    Alert.alert(
-      'Delete Habit',
-      'Are you sure you want to delete this habit? This will permanently remove all associated results.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => removeHabit(id),
+  const confirmDelete = (node: GoalNode) => {
+    const count = descendantIds(node.id, nodes).length;
+    Alert.alert('Delete goal?', deleteMessage(count), [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          const removed = new Set([node.id, ...descendantIds(node.id, nodes)]);
+          setNodes((current) => current.filter((item) => !removed.has(item.id)));
+          setEntries((current) =>
+            current.filter((entry) => !removed.has(entry.goalId)),
+          );
+          void deleteGoalNode(node.id).catch((error) => {
+            console.warn('Failed to delete goal', error);
+            void load();
+          });
         },
-      ],
-    );
+      },
+    ]);
   };
 
   return (
@@ -297,26 +229,26 @@ export default function GoalsListScreen({ navigation }: Props) {
         <View style={styles.headerRow}>
           <Text style={styles.sectionHeader}>Goals</Text>
           <Pressable
-            onPress={openTypePicker}
+            onPress={openCreate}
             style={({ pressed }) => [
               styles.addButton,
               pressed && styles.pressed,
             ]}
-            accessibilityLabel="Add goal or habit"
+            accessibilityLabel="Add goal"
           >
             <Ionicons name="add" size={32} color="#111" />
           </Pressable>
         </View>
 
-        {goalsLoading ? (
+        {loading && visibleNodes.length === 0 ? (
           <View style={styles.goalsStatus}>
             <ActivityIndicator color="#007aff" />
           </View>
-        ) : goalsError ? (
+        ) : loadError && visibleNodes.length === 0 ? (
           <View style={styles.goalsStatus}>
-            <Text style={styles.errorText}>{goalsError}</Text>
+            <Text style={styles.errorText}>{loadError}</Text>
             <Pressable
-              onPress={() => void loadGoals()}
+              onPress={() => void load()}
               style={({ pressed }) => [
                 styles.retryButton,
                 pressed && styles.pressed,
@@ -325,90 +257,24 @@ export default function GoalsListScreen({ navigation }: Props) {
               <Text style={styles.retryButtonText}>Retry</Text>
             </Pressable>
           </View>
-        ) : visibleGoals.length === 0 ? (
+        ) : visibleNodes.length === 0 ? (
           <Text style={styles.emptyText}>
             No goals yet. Tap + to create one.
           </Text>
         ) : (
-          visibleGoals.map((goal, index) => (
+          visibleNodes.map((node, index) => (
             <View
-              key={goal.id}
-              style={draggingId === goal.id ? styles.draggingWrap : undefined}
-            >
-              <DraggableItem
-                index={index}
-                itemHeight={LIST_CARD_HEIGHT}
-                onPress={() =>
-                  navigation.navigate('StepDetail', { goalId: goal.id })
-                }
-                onDragStart={() => setDraggingId(goal.id)}
-                onDragMove={() => {}}
-                onDragEnd={(from, to) => {
-                  const clampedTo = Math.max(
-                    0,
-                    Math.min(goalsListRef.current.length - 1, to),
-                  );
-                  reorderGoals(from, clampedTo);
-                  setDraggingId(null);
-                }}
-                style={styles.card}
-              >
-                <Text style={styles.cardTitle}>{goal.title}</Text>
-                <Text style={styles.cardMeta}>
-                  {goal.targetStartDate || goal.targetEndDate
-                    ? `${goal.targetStartDate ? formatDate(goal.targetStartDate) : '—'} – ${
-                        goal.targetEndDate ? formatDate(goal.targetEndDate) : '—'
-                      }`
-                    : goal.category
-                      ? goal.category
-                      : ''}
-                  {goal.category && (goal.targetStartDate || goal.targetEndDate)
-                    ? ` · ${goal.category}`
-                    : ''}
-                </Text>
-              </DraggableItem>
-            </View>
-          ))
-        )}
-
-        <Text style={[styles.sectionHeader, styles.habitsHeader]}>Habits</Text>
-
-        {habitsLoading ? (
-          <View style={styles.goalsStatus}>
-            <ActivityIndicator color="#007aff" />
-          </View>
-        ) : habitsError ? (
-          <View style={styles.goalsStatus}>
-            <Text style={styles.errorText}>{habitsError}</Text>
-            <Pressable
-              onPress={() => void loadHabits()}
-              style={({ pressed }) => [
-                styles.retryButton,
-                pressed && styles.pressed,
-              ]}
-            >
-              <Text style={styles.retryButtonText}>Retry</Text>
-            </Pressable>
-          </View>
-        ) : visibleHabits.length === 0 ? (
-          <Text style={styles.emptyText}>No habits yet.</Text>
-        ) : (
-          visibleHabits.map((habit, index) => (
-            <View
-              key={habit.id}
-              style={draggingId === habit.id ? styles.draggingWrap : undefined}
+              key={node.id}
+              style={draggingId === node.id ? styles.draggingWrap : undefined}
             >
               <Swipeable
                 enabled={draggingId == null}
                 overshootRight={false}
-                containerStyle={
-                  draggingId === habit.id ? styles.draggingWrap : undefined
-                }
                 renderRightActions={() => (
                   <Pressable
-                    onPress={() => confirmDeleteHabit(habit.id)}
+                    onPress={() => confirmDelete(node)}
                     style={styles.swipeDeleteAction}
-                    accessibilityLabel="Delete habit"
+                    accessibilityLabel="Delete goal"
                   >
                     <Ionicons name="trash" size={20} color="#fff" />
                   </Pressable>
@@ -418,22 +284,35 @@ export default function GoalsListScreen({ navigation }: Props) {
                   index={index}
                   itemHeight={LIST_CARD_HEIGHT}
                   onPress={() =>
-                    navigation.navigate('StepDetail', { goalId: habit.id })
+                    navigation.navigate('StepDetail', { goalId: node.id })
                   }
-                  onDragStart={() => setDraggingId(habit.id)}
+                  onDragStart={() => setDraggingId(node.id)}
                   onDragMove={() => {}}
                   onDragEnd={(from, to) => {
                     const clampedTo = Math.max(
                       0,
-                      Math.min(habitsListRef.current.length - 1, to),
+                      Math.min(listRef.current.length - 1, to),
                     );
-                    reorderHabits(from, clampedTo);
+                    reorderNodes(from, clampedTo);
                     setDraggingId(null);
                   }}
                   style={styles.card}
                 >
-                  <Text style={styles.cardTitle}>
-                    {habit.title || 'Untitled habit'}
+                  <View style={styles.titleRow}>
+                    <Text style={styles.cardTitle} numberOfLines={1}>
+                      {node.title || 'Untitled'}
+                    </Text>
+                    {isRepeating(node) ? (
+                      <Ionicons
+                        name="repeat"
+                        size={16}
+                        color="#8e8e93"
+                        accessibilityLabel="Repeats"
+                      />
+                    ) : null}
+                  </View>
+                  <Text style={styles.cardMeta}>
+                    {cardSubtitle(node, nodes, entries, childrenMap)}
                   </Text>
                 </DraggableItem>
               </Swipeable>
@@ -441,51 +320,6 @@ export default function GoalsListScreen({ navigation }: Props) {
           ))
         )}
       </ScrollView>
-
-      <Modal
-        visible={typePickerVisible}
-        animationType="fade"
-        transparent
-        onRequestClose={() => setTypePickerVisible(false)}
-      >
-        <Pressable
-          style={styles.modalOverlay}
-          onPress={() => setTypePickerVisible(false)}
-        >
-          <Pressable style={styles.typePickerCard} onPress={() => {}}>
-            <Text style={styles.modalTitle}>Add</Text>
-            <Pressable
-              onPress={openCreateGoal}
-              style={({ pressed }) => [
-                styles.typeOption,
-                pressed && styles.pressed,
-              ]}
-            >
-              <Text style={styles.typeOptionText}>Goal</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => void createHabitFromPicker()}
-              disabled={creatingHabit}
-              style={({ pressed }) => [
-                styles.typeOption,
-                pressed && styles.pressed,
-              ]}
-            >
-              {creatingHabit ? (
-                <ActivityIndicator color="#007aff" />
-              ) : (
-                <Text style={styles.typeOptionText}>Habit</Text>
-              )}
-            </Pressable>
-            <Pressable
-              onPress={() => setTypePickerVisible(false)}
-              style={styles.modalButtonSecondary}
-            >
-              <Text style={styles.modalButtonSecondaryText}>Cancel</Text>
-            </Pressable>
-          </Pressable>
-        </Pressable>
-      </Modal>
 
       <Modal
         visible={createVisible}
@@ -501,82 +335,20 @@ export default function GoalsListScreen({ navigation }: Props) {
           >
             <View style={styles.modalCard}>
               <Text style={styles.modalTitle}>Add Goal</Text>
-              <View style={styles.fields}>
-                <FormFieldRow label="Title">
-                  <FormInlineInput
-                    value={title}
-                    onChangeText={setTitle}
-                    placeholder="Enter title"
-                    autoFocus
-                    returnKeyType="done"
-                    onSubmitEditing={() => {
-                      if (title.trim()) {
-                        void handleCreateGoal();
-                      }
-                    }}
-                  />
-                </FormFieldRow>
-                <FormSelectRow
-                  label="Category"
-                  value={category}
-                  placeholder="Optional"
-                  options={[
-                    { value: '', label: 'None' },
-                    ...GOAL_CATEGORIES.map((entry) => ({
-                      value: entry,
-                      label: entry,
-                    })),
-                  ]}
-                  onChange={(value) =>
-                    setCategory((value as GoalCategory) || '')
-                  }
-                />
-                <FormFieldRow label="Target">
-                  <FormInlineInput
-                    value={target}
-                    onChangeText={setTarget}
-                    placeholder="Optional"
-                    keyboardType="numeric"
-                  />
-                </FormFieldRow>
-                <FormFieldRow label="Unit">
-                  <FormInlineInput
-                    value={unit}
-                    onChangeText={setUnit}
-                    placeholder="e.g. miles, runs"
-                  />
-                </FormFieldRow>
-                <FormSelectRow
-                  label="Period"
-                  value={period}
-                  placeholder="None"
-                  options={PERIOD_OPTIONS}
-                  onChange={(value) =>
-                    setPeriod((value as TargetPeriod) || 'None')
-                  }
-                />
-                <FormDateRow
-                  label="Start"
-                  value={startDate}
-                  onChange={setStartDate}
-                />
-                <FormDateRow label="End" value={endDate} onChange={setEndDate} />
-                <FormFieldRow label="Status">
-                  <Pressable
-                    onPress={() =>
-                      setStatus((current) => cycleGoalStatus(current))
+              <FormFieldRow label="Title">
+                <FormInlineInput
+                  value={title}
+                  onChangeText={setTitle}
+                  placeholder="Enter title"
+                  autoFocus
+                  returnKeyType="done"
+                  onSubmitEditing={() => {
+                    if (title.trim()) {
+                      void handleCreate();
                     }
-                    style={({ pressed }) => [
-                      styles.statusChip,
-                      status === 'active' && styles.statusChipActive,
-                      status === 'done' && styles.statusChipDone,
-                      pressed && styles.pressed,
-                    ]}
-                  >
-                    <Text style={styles.statusChipText}>{status}</Text>
-                  </Pressable>
-                </FormFieldRow>
-              </View>
+                  }}
+                />
+              </FormFieldRow>
 
               {createError ? (
                 <Text style={styles.errorText}>{createError}</Text>
@@ -590,23 +362,14 @@ export default function GoalsListScreen({ navigation }: Props) {
                   <Text style={styles.modalButtonSecondaryText}>Cancel</Text>
                 </Pressable>
                 <Pressable
-                  onPress={() => void handleCreateGoal()}
-                  disabled={
-                    creatingGoal ||
-                    !title.trim() ||
-                    !startDate.trim() ||
-                    !endDate.trim()
-                  }
+                  onPress={() => void handleCreate()}
+                  disabled={creating || !title.trim()}
                   style={[
                     styles.modalButtonPrimary,
-                    (creatingGoal ||
-                      !title.trim() ||
-                      !startDate.trim() ||
-                      !endDate.trim()) &&
-                      styles.modalButtonDisabled,
+                    (creating || !title.trim()) && styles.modalButtonDisabled,
                   ]}
                 >
-                  {creatingGoal ? (
+                  {creating ? (
                     <ActivityIndicator color="#fff" />
                   ) : (
                     <Text style={styles.modalButtonPrimaryText}>Create</Text>
@@ -640,10 +403,6 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: '700',
     color: '#111',
-  },
-  habitsHeader: {
-    marginTop: 16,
-    marginBottom: 10,
   },
   addButton: {
     padding: 4,
@@ -704,7 +463,13 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 8,
   },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   cardTitle: {
+    flexShrink: 1,
     fontSize: 18,
     fontWeight: '700',
     color: '#111',
@@ -713,6 +478,7 @@ const styles = StyleSheet.create({
   cardMeta: {
     fontSize: 13,
     color: '#666',
+    minHeight: 16,
   },
   modalOverlay: {
     flex: 1,
@@ -729,33 +495,11 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 16,
   },
-  typePickerCard: {
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 16,
-    marginHorizontal: 40,
-    gap: 8,
-  },
-  typeOption: {
-    paddingVertical: 14,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: '#f5f5f7',
-  },
-  typeOptionText: {
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#111',
-    textAlign: 'center',
-  },
   modalTitle: {
     fontSize: 20,
     fontWeight: '700',
     marginBottom: 12,
     color: '#111',
-  },
-  fields: {
-    gap: 10,
   },
   modalActions: {
     flexDirection: 'row',
@@ -769,8 +513,6 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 8,
     backgroundColor: '#f0f0f0',
-    alignSelf: 'flex-end',
-    marginTop: 4,
   },
   modalButtonSecondaryText: {
     fontSize: 15,
@@ -793,25 +535,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: '#fff',
-  },
-  statusChip: {
-    alignSelf: 'flex-start',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    backgroundColor: '#eee',
-  },
-  statusChipActive: {
-    backgroundColor: '#e3f2fd',
-  },
-  statusChipDone: {
-    backgroundColor: '#e8f5e9',
-  },
-  statusChipText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#333',
-    textTransform: 'lowercase',
   },
   pressed: {
     opacity: 0.7,

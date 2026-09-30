@@ -15,74 +15,132 @@ import {
   type NativeSyntheticEvent,
 } from 'react-native';
 import { PendingStatusCircle } from '../components/PendingStatusCircle';
-import { getGoals } from '../lib/goalsApi';
 import {
-  addCompletion,
-  getAllActiveHabits,
-  getCompletionsForHabit,
-  removeCompletion,
-  type ActiveHabit,
-} from '../lib/habitsApi';
-import { getAllActiveMilestones, isInProgressMilestone, setMilestoneStatus } from '../lib/milestonesApi';
+  deleteEntry,
+  getAllGoalNodes,
+  getEntries,
+  setGoalNodeStatus,
+  upsertEntry,
+} from '../lib/goalTreeApi';
+import {
+  buildChildrenMap,
+  getActionableSteps,
+  isLeaf,
+  isRepeating,
+} from '../lib/goalTree';
 import type { TodayStackParamList } from '../navigation/GoalsStackNavigator';
-import type { Milestone } from '../types';
 import { nextGoalStatus } from '../types';
+import type { GoalNode, GoalNodeStatus } from '../types/goalNode';
 import {
   addDays,
   formatDate,
   formatShortDate,
+  getWeekday,
   getWeekDays,
   getWeekStart,
+  isFutureDate,
+  isItemActiveOnDate,
   todayDateString,
   toggleDateInLog,
   WEEKDAY_SHORT_LABELS,
   type WeekDayCell,
 } from '../utils/date';
 import { calculateStreak } from '../utils/streak';
-import {
-  buildChecklistSections,
-  type ChecklistItem,
-} from '../utils/todayChecklist';
 
 /** Extra days before the visible week so streak badges stay accurate. */
 const COMPLETION_LOOKBACK_DAYS = 90;
 
-function isDatedItemVisible(
-  item: {
-    createdDate: string;
-    startDate?: string;
-    endDate?: string;
-    deletedAt?: string;
-  },
+const WEEKDAY_INDEX = {
+  sunday: 0,
+  monday: 1,
+  tuesday: 2,
+  wednesday: 3,
+  thursday: 4,
+  friday: 5,
+  saturday: 6,
+} as const;
+
+type RepeatingRow = {
+  id: string;
+  title: string;
+  isComplete: boolean;
+  isInteractive: boolean;
+  isPlanned: boolean;
+  streak: number;
+  contextTitle?: string;
+};
+
+function isPlannedOnDate(
+  plannedDays: number[] | null,
   dateString: string,
 ): boolean {
-  if (item.deletedAt) {
-    return false;
+  if (plannedDays == null || plannedDays.length === 0) {
+    return true;
   }
-  if (dateString < item.createdDate) {
-    return false;
-  }
-  if (item.startDate && dateString < item.startDate) {
-    return false;
-  }
-  if (item.endDate && dateString > item.endDate) {
-    return false;
-  }
-  return true;
+  return plannedDays.includes(WEEKDAY_INDEX[getWeekday(dateString)]);
 }
 
-function withCompletions(
-  habits: ActiveHabit[],
-  completionsByHabitId: Map<string, string[]>,
-): ActiveHabit[] {
-  return habits.map((habit) => {
-    const completionLog = completionsByHabitId.get(habit.id) ?? [];
-    return {
-      ...habit,
-      completionLog,
-      streakCount: calculateStreak(completionLog),
-    };
-  });
+function isActiveOnDate(node: GoalNode, dateString: string): boolean {
+  return isItemActiveOnDate(
+    {
+      createdDate: node.createdDate,
+      startDate: node.actualStartDate ?? undefined,
+      endDate: node.targetEndDate ?? undefined,
+    },
+    dateString,
+  );
+}
+
+function logsFromEntries(
+  entries: { goalId: string; entryDate: string }[],
+): Map<string, string[]> {
+  const logs = new Map<string, string[]>();
+  for (const entry of entries) {
+    const dates = logs.get(entry.goalId) ?? [];
+    dates.push(entry.entryDate);
+    logs.set(entry.goalId, dates);
+  }
+  return logs;
+}
+
+function topLevelAncestor(
+  node: GoalNode,
+  byId: Map<string, GoalNode>,
+): GoalNode | null {
+  let current: GoalNode | undefined = node;
+  let top: GoalNode | null = null;
+  const seen = new Set<string>();
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    top = current;
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+  return top;
+}
+
+function contextTitle(
+  node: GoalNode,
+  byId: Map<string, GoalNode>,
+): string | undefined {
+  if (node.parentId == null) {
+    return undefined;
+  }
+  const parent = byId.get(node.parentId);
+  if (!parent) {
+    return undefined;
+  }
+  const top = topLevelAncestor(node, byId);
+  if (!top || top.id === parent.id) {
+    return parent.title;
+  }
+  return `${parent.title} · ${top.title}`;
+}
+
+function showsInProgress(node: GoalNode, today: string, childrenMap: Map<string | null, GoalNode[]>): boolean {
+  if (isRepeating(node) || !isLeaf(node, childrenMap)) {
+    return false;
+  }
+  return node.status === 'active' || node.actualEndDate === today;
 }
 
 /** Weeks rendered on each side of the initially focused week. */
@@ -426,7 +484,7 @@ function ChecklistRow({
   onToggle,
   onOpen,
 }: {
-  item: ChecklistItem;
+  item: RepeatingRow;
   onToggle: () => void;
   onOpen: () => void;
 }) {
@@ -471,43 +529,42 @@ function ChecklistRow({
         <Ionicons name={iconName} size={24} color={iconColor} />
       </Pressable>
       <View style={styles.checklistContent}>
-        {item.parentTitle ? (
-          <Text style={styles.parentTitle} numberOfLines={1}>
-            {item.parentTitle}
-          </Text>
-        ) : null}
         <View style={styles.titleRow}>
           <Text
             style={[
               styles.checklistTitle,
-              (item.isComplete || item.isStatusDone) &&
-                styles.checklistTitleComplete,
+              item.isComplete && styles.checklistTitleComplete,
               item.isPlanned && styles.checklistTitlePlanned,
             ]}
           >
             {item.title}
           </Text>
-          {item.streak !== undefined ? <StreakBadge streak={item.streak} /> : null}
+          <StreakBadge streak={item.streak} />
           {item.isPlanned ? (
             <Text style={styles.plannedLabel}>Planned</Text>
           ) : null}
         </View>
+        {item.contextTitle ? (
+          <Text style={styles.contextTitle} numberOfLines={1}>
+            {item.contextTitle}
+          </Text>
+        ) : null}
       </View>
     </Pressable>
   );
 }
 
 function InProgressRow({
-  milestone,
+  step,
   onOpen,
   onToggleStatus,
 }: {
-  milestone: Milestone;
+  step: GoalNode;
   onOpen: () => void;
   onToggleStatus: () => void;
 }) {
-  const isDone = milestone.status === 'done';
-  const isPending = milestone.status === 'pending';
+  const isDone = step.status === 'done';
+  const isPending = step.status === 'pending';
 
   return (
     <Pressable
@@ -526,7 +583,7 @@ function InProgressRow({
           pressed && styles.pressed,
         ]}
         accessibilityRole="button"
-        accessibilityLabel={`Status ${milestone.status}. Tap to change.`}
+        accessibilityLabel={`Status ${step.status}. Tap to change.`}
       >
         {isDone ? (
           <Ionicons name="radio-button-on" size={24} color="#34c759" />
@@ -545,9 +602,9 @@ function InProgressRow({
           ]}
           numberOfLines={2}
         >
-          {milestone.title}
+          {step.title}
         </Text>
-        {milestone.targetEndDate ? (
+        {step.targetEndDate ? (
           <Text
             style={[
               styles.dueLabel,
@@ -555,7 +612,7 @@ function InProgressRow({
               isPending && styles.dueLabelPending,
             ]}
           >
-            Due {formatShortDate(milestone.targetEndDate)}
+            Due {formatShortDate(step.targetEndDate)}
           </Text>
         ) : null}
       </View>
@@ -585,60 +642,48 @@ export default function TodayScreen() {
   const [pageIndex, setPageIndex] = useState(INITIAL_SIDE_WEEKS);
   const listRef = useRef<FlatList<string> | null>(null);
 
-  const [habits, setHabits] = useState<ActiveHabit[]>([]);
-  const [activeMilestones, setActiveMilestones] = useState<Milestone[]>([]);
+  const [nodes, setNodes] = useState<GoalNode[]>([]);
+  const [entryLogs, setEntryLogs] = useState<Map<string, string[]>>(
+    () => new Map(),
+  );
   const [headerTitle, setHeaderTitle] = useState('Set a Goal to get started');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const pendingTogglesRef = useRef<Set<string>>(new Set());
   const visibleWeekStartRef = useRef(visibleWeekStart);
-  const habitsRef = useRef(habits);
+  const nodesRef = useRef(nodes);
   visibleWeekStartRef.current = visibleWeekStart;
-  habitsRef.current = habits;
+  nodesRef.current = nodes;
 
-  const loadCompletions = useCallback(
-    async (habitList: ActiveHabit[], weekStart: string) => {
-      const rangeStart = addDays(weekStart, -COMPLETION_LOOKBACK_DAYS);
-      const rangeEnd = addDays(weekStart, 6);
-
-      const results = await Promise.all(
-        habitList.map(async (habit) => {
-          const dates = await getCompletionsForHabit(
-            habit.id,
-            rangeStart,
-            rangeEnd,
-          );
-          return [habit.id, dates] as const;
-        }),
+  const loadEntryLogs = useCallback(
+    async (nodeList: GoalNode[], weekStart: string) => {
+      const ids = nodeList.filter(isRepeating).map((node) => node.id);
+      if (ids.length === 0) {
+        return new Map<string, string[]>();
+      }
+      const entries = await getEntries(
+        ids,
+        addDays(weekStart, -COMPLETION_LOOKBACK_DAYS),
+        addDays(weekStart, 6),
       );
-
-      return new Map<string, string[]>(results);
+      return logsFromEntries(entries);
     },
     [],
   );
 
   const loadTodayData = useCallback(
     async (weekStart: string) => {
-      setLoading(true);
       setLoadError(null);
       try {
-        const [nextHabits, goals, milestones] = await Promise.all([
-          getAllActiveHabits(),
-          getGoals(),
-          getAllActiveMilestones(),
-        ]);
-
-        const primaryGoal = goals.find(
-          (goal) => !goal.deletedAt && goal.status !== 'done',
-        );
-        setHeaderTitle(primaryGoal?.title ?? 'Set a Goal to get started');
-        setActiveMilestones(milestones);
-
-        const completionsByHabitId = await loadCompletions(
-          nextHabits,
-          weekStart,
-        );
-        setHabits(withCompletions(nextHabits, completionsByHabitId));
+        const nextNodes = await getAllGoalNodes();
+        const topLevel = nextNodes
+          .filter((node) => node.parentId == null && node.status !== 'done')
+          .sort((a, b) => a.sortOrder - b.sortOrder);
+        const primary =
+          topLevel.find((node) => !isRepeating(node)) ?? topLevel[0];
+        setHeaderTitle(primary?.title || 'Set a Goal to get started');
+        setNodes(nextNodes);
+        setEntryLogs(await loadEntryLogs(nextNodes, weekStart));
       } catch (error) {
         const message =
           error instanceof Error ? error.message : 'Failed to load today.';
@@ -647,7 +692,7 @@ export default function TodayScreen() {
         setLoading(false);
       }
     },
-    [loadCompletions],
+    [loadEntryLogs],
   );
 
   useFocusEffect(
@@ -661,19 +706,14 @@ export default function TodayScreen() {
       setVisibleWeekStart(weekStart);
       void (async () => {
         try {
-          const completionsByHabitId = await loadCompletions(
-            habitsRef.current,
-            weekStart,
-          );
-          setHabits((current) =>
-            withCompletions(current, completionsByHabitId),
-          );
+          const logs = await loadEntryLogs(nodesRef.current, weekStart);
+          setEntryLogs(logs);
         } catch (error) {
           console.warn('Failed to refresh completions for week', error);
         }
       })();
     },
-    [loadCompletions],
+    [loadEntryLogs],
   );
 
   const weekDays = useMemo(
@@ -682,43 +722,42 @@ export default function TodayScreen() {
   );
   const isViewingCurrentWeek = visibleWeekStart === todayWeekStart;
 
-  const milestoneTitles = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const habit of habits) {
-      const milestone = habit.parentMilestone;
-      if (milestone && isDatedItemVisible(milestone, selectedDate)) {
-        map.set(milestone.id, milestone.title);
-      }
-    }
-    return map;
-  }, [habits, selectedDate]);
-
-  const goalTitles = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const habit of habits) {
-      const goal = habit.parentGoal;
-      if (goal && isDatedItemVisible(goal, selectedDate)) {
-        map.set(goal.id, goal.title);
-      }
-    }
-    return map;
-  }, [habits, selectedDate]);
-
-  const sections = useMemo(
-    () =>
-      buildChecklistSections(
-        selectedDate,
-        habits,
-        milestoneTitles,
-        goalTitles,
-        today,
-      ),
-    [selectedDate, habits, milestoneTitles, goalTitles, today],
+  const nodesById = useMemo(
+    () => new Map(nodes.map((node) => [node.id, node])),
+    [nodes],
   );
+  const childrenMap = useMemo(() => buildChildrenMap(nodes), [nodes]);
 
-  const totalItems = sections.reduce(
-    (sum, section) => sum + section.items.length,
-    0,
+  const repeatingRows = useMemo(() => {
+    const planned = isFutureDate(selectedDate, today);
+    return getActionableSteps(nodes)
+      .filter(
+        (node) =>
+          isRepeating(node) &&
+          isPlannedOnDate(node.plannedDays, selectedDate) &&
+          isActiveOnDate(node, selectedDate),
+      )
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title))
+      .map((node): RepeatingRow => {
+        const log = entryLogs.get(node.id) ?? [];
+        return {
+          id: node.id,
+          title: node.title,
+          isComplete: log.includes(selectedDate),
+          isInteractive: !planned,
+          isPlanned: planned,
+          streak: calculateStreak(log, selectedDate),
+          contextTitle: contextTitle(node, nodesById),
+        };
+      });
+  }, [entryLogs, nodes, nodesById, selectedDate, today]);
+
+  const inProgressSteps = useMemo(
+    () =>
+      nodes
+        .filter((node) => showsInProgress(node, today, childrenMap))
+        .sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title)),
+    [childrenMap, nodes, today],
   );
 
   const checklistHeading = getChecklistHeading(selectedDate, today);
@@ -736,63 +775,64 @@ export default function TodayScreen() {
     });
   };
 
-  const handleMilestoneStatusCycle = (milestone: Milestone) => {
-    const next = nextGoalStatus(milestone.status);
-    const todayStr = todayDateString();
+  const applyStatus = (
+    node: GoalNode,
+    next: GoalNodeStatus,
+    todayStr: string,
+  ): GoalNode => {
+    if (next === 'done') {
+      return { ...node, status: next, actualEndDate: todayStr };
+    }
+    if (next === 'active') {
+      return {
+        ...node,
+        status: next,
+        actualEndDate: null,
+        actualStartDate: node.actualStartDate ?? todayStr,
+      };
+    }
+    return { ...node, status: next };
+  };
 
-    setActiveMilestones((current) =>
-      current
-        .map((item) => {
-          if (item.id !== milestone.id) {
-            return item;
-          }
-          if (next === 'done') {
-            return { ...item, status: next, actualEndDate: todayStr };
-          }
-          if (next === 'active') {
-            return {
-              ...item,
-              status: next,
-              actualEndDate: undefined,
-              actualStartDate: item.actualStartDate ?? todayStr,
-            };
-          }
-          // pending: keep actualStartDate / actualEndDate as-is
-          return { ...item, status: next };
-        })
-        .filter((item) => isInProgressMilestone(item, todayStr)),
+  const handleStatusCycle = (step: GoalNode) => {
+    const next = nextGoalStatus(step.status);
+    const todayStr = todayDateString();
+    const previous = nodes.find((node) => node.id === step.id) ?? step;
+
+    setNodes((current) =>
+      current.map((node) =>
+        node.id === step.id ? applyStatus(node, next, todayStr) : node,
+      ),
     );
 
-    void setMilestoneStatus(milestone.id, next)
+    void setGoalNodeStatus(step.id, next)
       .then((updated) => {
-        setActiveMilestones((current) =>
-          current
-            .map((item) => {
-              if (item.id !== updated.id) {
-                return item;
-              }
-              // Prefer server row, but never drop today's actualEndDate on pending
-              // if the response omitted/normalized it away.
-              if (
-                updated.status === 'pending' &&
-                !updated.actualEndDate &&
-                item.actualEndDate
-              ) {
-                return { ...updated, actualEndDate: item.actualEndDate };
-              }
-              return updated;
-            })
-            .filter((item) => isInProgressMilestone(item, todayStr)),
+        setNodes((current) =>
+          current.map((node) => {
+            if (node.id !== updated.id) {
+              return node;
+            }
+            if (
+              updated.status === 'pending' &&
+              !updated.actualEndDate &&
+              node.actualEndDate
+            ) {
+              return { ...updated, actualEndDate: node.actualEndDate };
+            }
+            return updated;
+          }),
         );
       })
       .catch((error) => {
-        console.warn('Failed to update milestone status', error);
-        void loadTodayData(visibleWeekStartRef.current);
+        console.warn('Failed to update step status', error);
+        setNodes((current) =>
+          current.map((node) => (node.id === step.id ? previous : node)),
+        );
       });
   };
 
-  const handleToggle = (item: ChecklistItem) => {
-    if (!item.isInteractive || item.type !== 'habit') {
+  const handleToggle = (item: RepeatingRow) => {
+    if (!item.isInteractive) {
       return;
     }
 
@@ -801,53 +841,36 @@ export default function TodayScreen() {
       return;
     }
 
-    const habit = habits.find((entry) => entry.id === item.id);
-    if (!habit) {
-      return;
-    }
-
-    const wasComplete = habit.completionLog.includes(selectedDate);
-    const previousLog = habit.completionLog;
+    const previousLog = entryLogs.get(item.id) ?? [];
+    const wasComplete = previousLog.includes(selectedDate);
     const nextLog = toggleDateInLog(previousLog, selectedDate);
 
-    setHabits((current) =>
-      current.map((entry) =>
-        entry.id === item.id
-          ? {
-              ...entry,
-              completionLog: nextLog,
-              streakCount: calculateStreak(nextLog, selectedDate),
-            }
-          : entry,
-      ),
-    );
+    setEntryLogs((current) => {
+      const next = new Map(current);
+      next.set(item.id, nextLog);
+      return next;
+    });
 
     pendingTogglesRef.current.add(toggleKey);
     const persist = wasComplete
-      ? removeCompletion(item.id, selectedDate)
-      : addCompletion(item.id, selectedDate);
+      ? deleteEntry(item.id, selectedDate)
+      : upsertEntry(item.id, selectedDate, null);
 
     void persist
       .catch((error) => {
         console.warn('Failed to toggle habit completion', error);
-        setHabits((current) =>
-          current.map((entry) =>
-            entry.id === item.id
-              ? {
-                  ...entry,
-                  completionLog: previousLog,
-                  streakCount: calculateStreak(previousLog, selectedDate),
-                }
-              : entry,
-          ),
-        );
+        setEntryLogs((current) => {
+          const next = new Map(current);
+          next.set(item.id, previousLog);
+          return next;
+        });
       })
       .finally(() => {
         pendingTogglesRef.current.delete(toggleKey);
       });
   };
 
-  if (loading && habits.length === 0) {
+  if (loading && nodes.length === 0) {
     return (
       <View style={styles.loadingState}>
         <ActivityIndicator color="#007aff" />
@@ -855,7 +878,7 @@ export default function TodayScreen() {
     );
   }
 
-  if (loadError && habits.length === 0) {
+  if (loadError && nodes.length === 0) {
     return (
       <View style={styles.loadingState}>
         <Text style={styles.errorText}>{loadError}</Text>
@@ -908,46 +931,40 @@ export default function TodayScreen() {
 
       <Text style={styles.screenTitle}>{checklistHeading}</Text>
 
-      {activeMilestones.length > 0 ? (
+      {inProgressSteps.length > 0 ? (
         <View style={styles.sectionBlock}>
           <Text style={styles.sectionHeader}>In Progress</Text>
           <View style={styles.checklistCard}>
-            {activeMilestones.map((milestone) => (
+            {inProgressSteps.map((step) => (
               <InProgressRow
-                key={milestone.id}
-                milestone={milestone}
+                key={step.id}
+                step={step}
                 onOpen={() =>
-                  navigation.navigate('MilestoneDetail', {
-                    milestoneId: milestone.id,
-                  })
+                  navigation.navigate('StepDetail', { goalId: step.id })
                 }
-                onToggleStatus={() => handleMilestoneStatusCycle(milestone)}
+                onToggleStatus={() => handleStatusCycle(step)}
               />
             ))}
           </View>
         </View>
       ) : null}
 
-      {totalItems > 0 ? (
-        sections.map((section) => (
-          <View key={section.key} style={styles.sectionBlock}>
-            <Text style={styles.sectionHeader}>{section.title}</Text>
-            <View style={styles.checklistCard}>
-              {section.items.map((checklistItem) => (
-                <ChecklistRow
-                  key={`${checklistItem.type}-${checklistItem.id}`}
-                  item={checklistItem}
-                  onToggle={() => handleToggle(checklistItem)}
-                  onOpen={() =>
-                    navigation.navigate('HabitDetail', {
-                      habitId: checklistItem.id,
-                    })
-                  }
-                />
-              ))}
-            </View>
+      {repeatingRows.length > 0 ? (
+        <View style={styles.sectionBlock}>
+          <Text style={styles.sectionHeader}>Habits</Text>
+          <View style={styles.checklistCard}>
+            {repeatingRows.map((row) => (
+              <ChecklistRow
+                key={row.id}
+                item={row}
+                onToggle={() => handleToggle(row)}
+                onOpen={() =>
+                  navigation.navigate('StepDetail', { goalId: row.id })
+                }
+              />
+            ))}
           </View>
-        ))
+        </View>
       ) : (
         <View style={styles.emptyCard}>
           <Text style={styles.emptyText}>
@@ -1133,11 +1150,11 @@ const styles = StyleSheet.create({
   checklistContent: {
     flex: 1,
   },
-  parentTitle: {
+  contextTitle: {
     fontSize: 12,
     fontWeight: '500',
     color: '#888',
-    marginBottom: 1,
+    marginTop: 1,
   },
   titleRow: {
     flexDirection: 'row',
