@@ -4,16 +4,20 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
   type ListRenderItemInfo,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
+import { KeyboardSafe } from '../components/KeyboardSafe';
 import { PendingStatusCircle } from '../components/PendingStatusCircle';
 import {
   deleteEntry,
@@ -24,13 +28,16 @@ import {
 } from '../lib/goalTreeApi';
 import {
   buildChildrenMap,
-  getActionableSteps,
   isLeaf,
+  isPeriodTargetMet,
   isRepeating,
+  isTracked,
+  periodTotal,
+  rollupTotal,
 } from '../lib/goalTree';
 import type { TodayStackParamList } from '../navigation/GoalsStackNavigator';
 import { nextGoalStatus } from '../types';
-import type { GoalNode, GoalNodeStatus } from '../types/goalNode';
+import type { GoalEntry, GoalNode, GoalNodeStatus } from '../types/goalNode';
 import {
   addDays,
   formatDate,
@@ -39,9 +46,7 @@ import {
   getWeekDays,
   getWeekStart,
   isFutureDate,
-  isItemActiveOnDate,
   todayDateString,
-  toggleDateInLog,
   WEEKDAY_SHORT_LABELS,
   type WeekDayCell,
 } from '../utils/date';
@@ -63,11 +68,15 @@ const WEEKDAY_INDEX = {
 type RepeatingRow = {
   id: string;
   title: string;
+  tracked: boolean;
   isComplete: boolean;
   isInteractive: boolean;
-  isPlanned: boolean;
+  plannedToday: boolean;
+  met: boolean;
   streak: number;
   contextTitle?: string;
+  progressLabel?: string;
+  progressRatio: number;
 };
 
 function isPlannedOnDate(
@@ -80,27 +89,67 @@ function isPlannedOnDate(
   return plannedDays.includes(WEEKDAY_INDEX[getWeekday(dateString)]);
 }
 
-function isActiveOnDate(node: GoalNode, dateString: string): boolean {
-  return isItemActiveOnDate(
-    {
-      createdDate: node.createdDate,
-      startDate: node.actualStartDate ?? undefined,
-      endDate: node.targetEndDate ?? undefined,
-    },
-    dateString,
+function formatAmount(value: number): string {
+  if (Number.isInteger(value)) {
+    return String(value);
+  }
+  return String(Math.round(value * 100) / 100);
+}
+
+function dayValue(entries: GoalEntry[], goalId: string, date: string): number {
+  const entry = entries.find(
+    (item) => item.goalId === goalId && item.entryDate === date,
+  );
+  return entry?.value ?? 0;
+}
+
+function completionDates(node: GoalNode, entries: GoalEntry[]): string[] {
+  return entries
+    .filter((entry) => entry.goalId === node.id)
+    .filter((entry) =>
+      isTracked(node) ? (entry.value ?? 0) > 0 : true,
+    )
+    .map((entry) => entry.entryDate);
+}
+
+function withUpsertedEntry(
+  entries: GoalEntry[],
+  goalId: string,
+  date: string,
+  value: number | null,
+): GoalEntry[] {
+  const index = entries.findIndex(
+    (entry) => entry.goalId === goalId && entry.entryDate === date,
+  );
+  if (index >= 0) {
+    const next = entries.slice();
+    const current = entries[index];
+    if (current) {
+      next[index] = { ...current, value };
+    }
+    return next;
+  }
+  return [
+    ...entries,
+    { id: `local-${goalId}-${date}`, goalId, entryDate: date, value },
+  ];
+}
+
+function withoutEntry(
+  entries: GoalEntry[],
+  goalId: string,
+  date: string,
+): GoalEntry[] {
+  return entries.filter(
+    (entry) => !(entry.goalId === goalId && entry.entryDate === date),
   );
 }
 
-function logsFromEntries(
-  entries: { goalId: string; entryDate: string }[],
-): Map<string, string[]> {
-  const logs = new Map<string, string[]>();
-  for (const entry of entries) {
-    const dates = logs.get(entry.goalId) ?? [];
-    dates.push(entry.entryDate);
-    logs.set(entry.goalId, dates);
+function progressRatio(total: number, target: number | null): number {
+  if (target == null || target <= 0) {
+    return 0;
   }
-  return logs;
+  return Math.max(0, Math.min(1, total / target));
 }
 
 function topLevelAncestor(
@@ -136,11 +185,62 @@ function contextTitle(
   return `${parent.title} · ${top.title}`;
 }
 
-function showsInProgress(node: GoalNode, today: string, childrenMap: Map<string | null, GoalNode[]>): boolean {
-  if (isRepeating(node) || !isLeaf(node, childrenMap)) {
+/** Repeating steps stay on Today until they are marked done. Planned days only affect order. */
+function listedAsRepeating(node: GoalNode): boolean {
+  return (
+    (isRepeating(node) || node.repeatPeriod != null) && node.status !== 'done'
+  );
+}
+
+function isInProgressStatus(node: GoalNode, today: string): boolean {
+  return node.status === 'active' || node.actualEndDate === today;
+}
+
+/** True when a descendant is already the Today row for this branch. */
+function workLivesOnDescendant(
+  node: GoalNode,
+  today: string,
+  childrenMap: Map<string | null, GoalNode[]>,
+): boolean {
+  const stack = [...(childrenMap.get(node.id) ?? [])];
+  const seen = new Set<string>();
+
+  while (stack.length > 0) {
+    const child = stack.pop();
+    if (!child || seen.has(child.id)) {
+      continue;
+    }
+    seen.add(child.id);
+    if (listedAsRepeating(child)) {
+      return true;
+    }
+    if (!isRepeating(child) && isInProgressStatus(child, today)) {
+      return true;
+    }
+    for (const grandchild of childrenMap.get(child.id) ?? []) {
+      stack.push(grandchild);
+    }
+  }
+
+  return false;
+}
+
+function showsInProgress(
+  node: GoalNode,
+  today: string,
+  childrenMap: Map<string | null, GoalNode[]>,
+): boolean {
+  if (
+    isRepeating(node) ||
+    node.repeatPeriod != null ||
+    !isInProgressStatus(node, today)
+  ) {
     return false;
   }
-  return node.status === 'active' || node.actualEndDate === today;
+  if (workLivesOnDescendant(node, today, childrenMap)) {
+    return false;
+  }
+  return isLeaf(node, childrenMap) || node.status === 'active';
 }
 
 /** Weeks rendered on each side of the initially focused week. */
@@ -488,66 +588,97 @@ function ChecklistRow({
   onToggle: () => void;
   onOpen: () => void;
 }) {
-  const iconName = item.isComplete
-    ? 'radio-button-on'
-    : item.isPlanned
-      ? 'ellipse-outline'
-      : 'radio-button-off';
-  const iconColor = item.isComplete
-    ? '#34c759'
-    : item.isPlanned
-      ? '#d1d1d6'
-      : '#c7c7cc';
+  const iconName = item.isComplete ? 'radio-button-on' : 'radio-button-off';
+  const iconColor = item.isComplete ? '#34c759' : '#c7c7cc';
 
   return (
     <Pressable
       onPress={onOpen}
       style={({ pressed }) => [
         styles.checklistRow,
-        item.isComplete && styles.checklistRowComplete,
-        item.isPlanned && styles.checklistRowPlanned,
+        item.isComplete && !item.tracked && styles.checklistRowComplete,
+        item.met && styles.checklistRowMet,
         pressed && styles.pressed,
       ]}
     >
-      <Pressable
-        onPress={item.isInteractive ? onToggle : undefined}
-        disabled={!item.isInteractive}
-        hitSlop={4}
-        style={({ pressed }) => [
-          styles.radioHit,
-          item.isInteractive && pressed && styles.pressed,
-        ]}
-        accessibilityRole="checkbox"
-        accessibilityState={{
-          checked: item.isComplete,
-          disabled: !item.isInteractive,
-        }}
-        accessibilityLabel={
-          item.isComplete ? 'Mark habit incomplete' : 'Mark habit complete'
-        }
-      >
-        <Ionicons name={iconName} size={24} color={iconColor} />
-      </Pressable>
+      {item.tracked ? (
+        item.met ? (
+          <View style={styles.radioHit} accessibilityLabel="Target met">
+            <Ionicons name="checkmark" size={22} color="#34c759" />
+          </View>
+        ) : (
+          <View style={styles.radioHit} />
+        )
+      ) : (
+        <Pressable
+          onPress={item.isInteractive ? onToggle : undefined}
+          disabled={!item.isInteractive}
+          hitSlop={4}
+          style={({ pressed }) => [
+            styles.radioHit,
+            item.isInteractive && pressed && styles.pressed,
+          ]}
+          accessibilityRole="checkbox"
+          accessibilityState={{
+            checked: item.isComplete,
+            disabled: !item.isInteractive,
+          }}
+          accessibilityLabel={
+            item.isComplete ? 'Mark habit incomplete' : 'Mark habit complete'
+          }
+        >
+          <Ionicons name={iconName} size={24} color={iconColor} />
+        </Pressable>
+      )}
       <View style={styles.checklistContent}>
         <View style={styles.titleRow}>
+          {item.plannedToday && !item.met ? (
+            <View style={styles.planDot} accessibilityLabel="Planned for this day" />
+          ) : null}
+          {item.met && !item.tracked ? (
+            <Ionicons
+              name="checkmark"
+              size={16}
+              color="#34c759"
+              accessibilityLabel="Target met"
+            />
+          ) : null}
           <Text
             style={[
               styles.checklistTitle,
-              item.isComplete && styles.checklistTitleComplete,
-              item.isPlanned && styles.checklistTitlePlanned,
+              item.isComplete && !item.tracked && styles.checklistTitleComplete,
+              item.met && styles.checklistTitleMuted,
             ]}
           >
             {item.title}
           </Text>
           <StreakBadge streak={item.streak} />
-          {item.isPlanned ? (
-            <Text style={styles.plannedLabel}>Planned</Text>
-          ) : null}
         </View>
         {item.contextTitle ? (
           <Text style={styles.contextTitle} numberOfLines={1}>
             {item.contextTitle}
           </Text>
+        ) : null}
+        {item.tracked && item.progressLabel ? (
+          <View style={styles.progressBlock}>
+            <Text
+              style={[
+                styles.progressLabel,
+                item.met && styles.checklistTitleMuted,
+              ]}
+            >
+              {item.progressLabel}
+            </Text>
+            <View style={styles.progressTrack}>
+              <View
+                style={[
+                  styles.progressFill,
+                  { width: `${item.progressRatio * 100}%` },
+                  item.met && styles.progressFillMet,
+                ]}
+              />
+            </View>
+          </View>
         ) : null}
       </View>
     </Pressable>
@@ -556,12 +687,18 @@ function ChecklistRow({
 
 function InProgressRow({
   step,
+  context,
+  progressLabel,
   onOpen,
   onToggleStatus,
+  onLog,
 }: {
   step: GoalNode;
+  context?: string;
+  progressLabel?: string;
   onOpen: () => void;
   onToggleStatus: () => void;
+  onLog?: () => void;
 }) {
   const isDone = step.status === 'done';
   const isPending = step.status === 'pending';
@@ -604,6 +741,11 @@ function InProgressRow({
         >
           {step.title}
         </Text>
+        {context ? (
+          <Text style={styles.contextTitle} numberOfLines={1}>
+            {context}
+          </Text>
+        ) : null}
         {step.targetEndDate ? (
           <Text
             style={[
@@ -615,7 +757,23 @@ function InProgressRow({
             Due {formatShortDate(step.targetEndDate)}
           </Text>
         ) : null}
+        {progressLabel ? (
+          <Text style={styles.progressLabel}>{progressLabel}</Text>
+        ) : null}
       </View>
+      {onLog ? (
+        <Pressable
+          onPress={onLog}
+          hitSlop={6}
+          style={({ pressed }) => [
+            styles.logAddButton,
+            pressed && styles.pressed,
+          ]}
+          accessibilityLabel="Log an amount"
+        >
+          <Ionicons name="add" size={22} color="#007aff" />
+        </Pressable>
+      ) : null}
     </Pressable>
   );
 }
@@ -643,30 +801,34 @@ export default function TodayScreen() {
   const listRef = useRef<FlatList<string> | null>(null);
 
   const [nodes, setNodes] = useState<GoalNode[]>([]);
-  const [entryLogs, setEntryLogs] = useState<Map<string, string[]>>(
-    () => new Map(),
-  );
+  const [entries, setEntries] = useState<GoalEntry[]>([]);
   const [headerTitle, setHeaderTitle] = useState('Set a Goal to get started');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [logStepId, setLogStepId] = useState<string | null>(null);
+  const [logAmount, setLogAmount] = useState('');
+  const [logError, setLogError] = useState<string | null>(null);
   const pendingTogglesRef = useRef<Set<string>>(new Set());
   const visibleWeekStartRef = useRef(visibleWeekStart);
   const nodesRef = useRef(nodes);
+  const entriesRef = useRef(entries);
   visibleWeekStartRef.current = visibleWeekStart;
   nodesRef.current = nodes;
+  entriesRef.current = entries;
 
   const loadEntryLogs = useCallback(
     async (nodeList: GoalNode[], weekStart: string) => {
-      const ids = nodeList.filter(isRepeating).map((node) => node.id);
+      const ids = nodeList
+        .filter((node) => isRepeating(node) || isTracked(node))
+        .map((node) => node.id);
       if (ids.length === 0) {
-        return new Map<string, string[]>();
+        return [];
       }
-      const entries = await getEntries(
+      return getEntries(
         ids,
         addDays(weekStart, -COMPLETION_LOOKBACK_DAYS),
         addDays(weekStart, 6),
       );
-      return logsFromEntries(entries);
     },
     [],
   );
@@ -683,7 +845,7 @@ export default function TodayScreen() {
           topLevel.find((node) => !isRepeating(node)) ?? topLevel[0];
         setHeaderTitle(primary?.title || 'Set a Goal to get started');
         setNodes(nextNodes);
-        setEntryLogs(await loadEntryLogs(nextNodes, weekStart));
+        setEntries(await loadEntryLogs(nextNodes, weekStart));
       } catch (error) {
         const message =
           error instanceof Error ? error.message : 'Failed to load today.';
@@ -706,8 +868,8 @@ export default function TodayScreen() {
       setVisibleWeekStart(weekStart);
       void (async () => {
         try {
-          const logs = await loadEntryLogs(nodesRef.current, weekStart);
-          setEntryLogs(logs);
+          const nextEntries = await loadEntryLogs(nodesRef.current, weekStart);
+          setEntries(nextEntries);
         } catch (error) {
           console.warn('Failed to refresh completions for week', error);
         }
@@ -729,28 +891,51 @@ export default function TodayScreen() {
   const childrenMap = useMemo(() => buildChildrenMap(nodes), [nodes]);
 
   const repeatingRows = useMemo(() => {
-    const planned = isFutureDate(selectedDate, today);
-    return getActionableSteps(nodes)
-      .filter(
-        (node) =>
-          isRepeating(node) &&
-          isPlannedOnDate(node.plannedDays, selectedDate) &&
-          isActiveOnDate(node, selectedDate),
-      )
-      .sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title))
+    const future = isFutureDate(selectedDate, today);
+    return nodes
+      .filter((node) => listedAsRepeating(node))
+      .sort((a, b) => {
+        const rank = (node: GoalNode) => {
+          if (isPeriodTargetMet(node, entries, selectedDate)) {
+            return 2;
+          }
+          return isPlannedOnDate(node.plannedDays, selectedDate) ? 0 : 1;
+        };
+        const byRank = rank(a) - rank(b);
+        if (byRank !== 0) {
+          return byRank;
+        }
+        return a.sortOrder - b.sortOrder || a.title.localeCompare(b.title);
+      })
       .map((node): RepeatingRow => {
-        const log = entryLogs.get(node.id) ?? [];
+        const tracked = isTracked(node);
+        const total = periodTotal(node, entries, selectedDate);
+        const period = node.repeatPeriod === 'month' ? 'this month' : 'this week';
+        const target =
+          node.targetAmount != null ? formatAmount(node.targetAmount) : '—';
         return {
           id: node.id,
           title: node.title,
-          isComplete: log.includes(selectedDate),
-          isInteractive: !planned,
-          isPlanned: planned,
-          streak: calculateStreak(log, selectedDate),
+          tracked,
+          isComplete: entries.some(
+            (entry) =>
+              entry.goalId === node.id && entry.entryDate === selectedDate,
+          ),
+          isInteractive: !future,
+          plannedToday: isPlannedOnDate(node.plannedDays, selectedDate),
+          met: isPeriodTargetMet(node, entries, selectedDate),
+          streak: calculateStreak(
+            completionDates(node, entries),
+            selectedDate,
+          ),
           contextTitle: contextTitle(node, nodesById),
+          progressLabel: tracked
+            ? `${formatAmount(total)} / ${target} ${node.unit} ${period}`
+            : undefined,
+          progressRatio: progressRatio(total, node.targetAmount),
         };
       });
-  }, [entryLogs, nodes, nodesById, selectedDate, today]);
+  }, [entries, nodes, nodesById, selectedDate, today]);
 
   const inProgressSteps = useMemo(
     () =>
@@ -832,7 +1017,7 @@ export default function TodayScreen() {
   };
 
   const handleToggle = (item: RepeatingRow) => {
-    if (!item.isInteractive) {
+    if (!item.isInteractive || item.tracked) {
       return;
     }
 
@@ -841,15 +1026,15 @@ export default function TodayScreen() {
       return;
     }
 
-    const previousLog = entryLogs.get(item.id) ?? [];
-    const wasComplete = previousLog.includes(selectedDate);
-    const nextLog = toggleDateInLog(previousLog, selectedDate);
-
-    setEntryLogs((current) => {
-      const next = new Map(current);
-      next.set(item.id, nextLog);
-      return next;
-    });
+    const previous = entriesRef.current;
+    const wasComplete = previous.some(
+      (entry) => entry.goalId === item.id && entry.entryDate === selectedDate,
+    );
+    setEntries(
+      wasComplete
+        ? withoutEntry(previous, item.id, selectedDate)
+        : withUpsertedEntry(previous, item.id, selectedDate, null),
+    );
 
     pendingTogglesRef.current.add(toggleKey);
     const persist = wasComplete
@@ -857,18 +1042,123 @@ export default function TodayScreen() {
       : upsertEntry(item.id, selectedDate, null);
 
     void persist
+      .then((saved) => {
+        if (wasComplete || saved == null || typeof saved === 'boolean') {
+          return;
+        }
+        setEntries((current) =>
+          current.map((entry) =>
+            entry.goalId === saved.goalId && entry.entryDate === saved.entryDate
+              ? saved
+              : entry,
+          ),
+        );
+      })
       .catch((error) => {
         console.warn('Failed to toggle habit completion', error);
-        setEntryLogs((current) => {
-          const next = new Map(current);
-          next.set(item.id, previousLog);
-          return next;
-        });
+        setEntries(previous);
       })
       .finally(() => {
         pendingTogglesRef.current.delete(toggleKey);
       });
   };
+
+  const openLog = (goalId: string) => {
+    setLogAmount('');
+    setLogError(null);
+    setLogStepId(goalId);
+  };
+
+  const closeLog = () => {
+    setLogStepId(null);
+    setLogAmount('');
+    setLogError(null);
+  };
+
+  const applyEntryChange = (
+    goalId: string,
+    date: string,
+    nextEntries: GoalEntry[],
+    persist: Promise<GoalEntry | void>,
+  ) => {
+    const previous = entriesRef.current;
+    const toggleKey = `${goalId}:${date}`;
+    if (pendingTogglesRef.current.has(toggleKey)) {
+      return;
+    }
+    setEntries(nextEntries);
+    closeLog();
+    pendingTogglesRef.current.add(toggleKey);
+    void persist
+      .then((saved) => {
+        if (!saved) {
+          return;
+        }
+        setEntries((current) =>
+          current.map((entry) =>
+            entry.goalId === saved.goalId && entry.entryDate === saved.entryDate
+              ? saved
+              : entry,
+          ),
+        );
+      })
+      .catch((error) => {
+        console.warn('Failed to update log', error);
+        setEntries(previous);
+      })
+      .finally(() => {
+        pendingTogglesRef.current.delete(toggleKey);
+      });
+  };
+
+  const handleAddAmount = () => {
+    if (!logStepId) {
+      return;
+    }
+    const trimmed = logAmount.trim();
+    const amount = Number(trimmed);
+    if (!trimmed || !Number.isFinite(amount) || amount <= 0) {
+      setLogError('Enter a number greater than zero.');
+      return;
+    }
+    const nextValue = dayValue(entriesRef.current, logStepId, selectedDate) + amount;
+    applyEntryChange(
+      logStepId,
+      selectedDate,
+      withUpsertedEntry(entriesRef.current, logStepId, selectedDate, nextValue),
+      upsertEntry(logStepId, selectedDate, nextValue),
+    );
+  };
+
+  const handleClearDay = () => {
+    if (!logStepId) {
+      return;
+    }
+    const goalId = logStepId;
+    Alert.alert(
+      'Clear this day?',
+      'This removes the amount logged for this day.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: () => {
+            applyEntryChange(
+              goalId,
+              selectedDate,
+              withoutEntry(entriesRef.current, goalId, selectedDate),
+              deleteEntry(goalId, selectedDate),
+            );
+          },
+        },
+      ],
+    );
+  };
+
+  const logStep = logStepId
+    ? nodes.find((node) => node.id === logStepId) ?? null
+    : null;
 
   if (loading && nodes.length === 0) {
     return (
@@ -896,6 +1186,7 @@ export default function TodayScreen() {
   }
 
   return (
+    <View style={styles.container}>
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.affirmation}>{headerTitle}</Text>
 
@@ -935,16 +1226,31 @@ export default function TodayScreen() {
         <View style={styles.sectionBlock}>
           <Text style={styles.sectionHeader}>In Progress</Text>
           <View style={styles.checklistCard}>
-            {inProgressSteps.map((step) => (
-              <InProgressRow
-                key={step.id}
-                step={step}
-                onOpen={() =>
-                  navigation.navigate('StepDetail', { goalId: step.id })
-                }
-                onToggleStatus={() => handleStatusCycle(step)}
-              />
-            ))}
+            {inProgressSteps.map((step) => {
+              const tracked = isTracked(step);
+              const total = tracked ? (rollupTotal(step, nodes, entries) ?? 0) : 0;
+              const target =
+                step.targetAmount != null
+                  ? formatAmount(step.targetAmount)
+                  : '—';
+              return (
+                <InProgressRow
+                  key={step.id}
+                  step={step}
+                  context={contextTitle(step, nodesById)}
+                  progressLabel={
+                    tracked
+                      ? `${formatAmount(total)} / ${target} ${step.unit}`
+                      : undefined
+                  }
+                  onOpen={() =>
+                    navigation.navigate('StepDetail', { goalId: step.id })
+                  }
+                  onToggleStatus={() => handleStatusCycle(step)}
+                  onLog={tracked ? () => openLog(step.id) : undefined}
+                />
+              );
+            })}
           </View>
         </View>
       ) : null}
@@ -959,13 +1265,15 @@ export default function TodayScreen() {
                 item={row}
                 onToggle={() => handleToggle(row)}
                 onOpen={() =>
-                  navigation.navigate('StepDetail', { goalId: row.id })
+                  row.tracked
+                    ? openLog(row.id)
+                    : navigation.navigate('StepDetail', { goalId: row.id })
                 }
               />
             ))}
           </View>
         </View>
-      ) : (
+      ) : inProgressSteps.length === 0 ? (
         <View style={styles.emptyCard}>
           <Text style={styles.emptyText}>
             {selectedDate === today
@@ -973,8 +1281,73 @@ export default function TodayScreen() {
               : 'Nothing scheduled for this day.'}
           </Text>
         </View>
-      )}
+      ) : null}
     </ScrollView>
+
+      <Modal
+        visible={logStep != null}
+        animationType="fade"
+        transparent
+        onRequestClose={closeLog}
+      >
+        <KeyboardSafe style={styles.modalOverlay} keyboardVerticalOffset={0}>
+          <Pressable style={styles.modalBackdrop} onPress={closeLog}>
+            <Pressable style={styles.logCard} onPress={() => {}}>
+              <Text style={styles.logTitle}>
+                {logStep?.title || 'Log amount'}
+              </Text>
+              <Text style={styles.logDate}>
+                {getChecklistHeading(selectedDate, today)}
+                {': '}
+                {formatAmount(
+                  logStep
+                    ? dayValue(entries, logStep.id, selectedDate)
+                    : 0,
+                )}{' '}
+                {logStep?.unit ?? ''}
+              </Text>
+              <View style={styles.logInputRow}>
+                <TextInput
+                  style={styles.logInput}
+                  value={logAmount}
+                  onChangeText={(value) => {
+                    setLogAmount(value);
+                    setLogError(null);
+                  }}
+                  placeholder="0"
+                  keyboardType="decimal-pad"
+                  returnKeyType="done"
+                  onSubmitEditing={handleAddAmount}
+                  autoFocus
+                />
+                <Text style={styles.logUnit}>{logStep?.unit ?? ''}</Text>
+                <Pressable
+                  onPress={handleAddAmount}
+                  style={({ pressed }) => [
+                    styles.logAddAction,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.logAddActionText}>Add</Text>
+                </Pressable>
+              </View>
+              {logError ? (
+                <Text style={styles.logError}>{logError}</Text>
+              ) : null}
+              <Pressable
+                onPress={handleClearDay}
+                style={({ pressed }) => [
+                  styles.logClearButton,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.logClearText}>Clear</Text>
+              </Pressable>
+            </Pressable>
+          </Pressable>
+        </KeyboardSafe>
+      </Modal>
+    </View>
   );
 }
 
@@ -1230,5 +1603,114 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.7,
+  },
+  checklistRowMet: {
+    backgroundColor: '#fafafa',
+  },
+  checklistTitleMuted: {
+    color: '#999',
+  },
+  planDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#007aff',
+  },
+  progressBlock: {
+    marginTop: 6,
+    gap: 4,
+  },
+  progressLabel: {
+    fontSize: 13,
+    color: '#555',
+  },
+  progressTrack: {
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#e5e5ea',
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: 4,
+    backgroundColor: '#007aff',
+  },
+  progressFillMet: {
+    backgroundColor: '#34c759',
+  },
+  logAddButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalOverlay: {
+    flex: 1,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  logCard: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 16,
+    gap: 8,
+  },
+  logTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#111',
+  },
+  logDate: {
+    fontSize: 15,
+    color: '#555',
+  },
+  logInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  logInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 17,
+    minHeight: 44,
+  },
+  logUnit: {
+    fontSize: 15,
+    color: '#555',
+  },
+  logAddAction: {
+    backgroundColor: '#007aff',
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logAddActionText: {
+    color: '#fff',
+    fontWeight: '600',
+    fontSize: 15,
+  },
+  logError: {
+    fontSize: 13,
+    color: '#c62828',
+  },
+  logClearButton: {
+    alignSelf: 'flex-start',
+    minHeight: 44,
+    justifyContent: 'center',
+  },
+  logClearText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#c62828',
   },
 });

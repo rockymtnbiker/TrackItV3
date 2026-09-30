@@ -1,4 +1,66 @@
-import type { GoalEntry, GoalNode } from '../types/goalNode';
+import type { GoalEntry, GoalNode, RepeatPeriod } from '../types/goalNode';
+import { addDays, getWeekStart, parseDateString, toDateString } from '../utils/date';
+
+export type PeriodRange = {
+  start: string;
+  end: string;
+};
+
+/** Week is Sunday–Saturday. Month is the calendar month containing the date. */
+export function getPeriodRange(
+  date: string,
+  repeatPeriod: RepeatPeriod,
+): PeriodRange {
+  if (repeatPeriod === 'month') {
+    const parsed = parseDateString(date);
+    const year = parsed.getFullYear();
+    const monthIndex = parsed.getMonth();
+    const lastDay = new Date(year, monthIndex + 1, 0).getDate();
+    return {
+      start: toDateString(year, monthIndex, 1),
+      end: toDateString(year, monthIndex, lastDay),
+    };
+  }
+
+  const start = getWeekStart(date);
+  return { start, end: addDays(start, 6) };
+}
+
+/**
+ * This step's own entries in the period containing date.
+ * Tracked steps sum values. Yes/no steps count entries.
+ */
+export function periodTotal(
+  node: GoalNode,
+  entries: GoalEntry[],
+  date: string,
+): number {
+  const range = getPeriodRange(date, node.repeatPeriod ?? 'week');
+  const own = entries.filter(
+    (entry) =>
+      entry.goalId === node.id &&
+      entry.entryDate >= range.start &&
+      entry.entryDate <= range.end,
+  );
+
+  if (isTracked(node)) {
+    return own.reduce((sum, entry) => sum + (entry.value ?? 0), 0);
+  }
+
+  return own.length;
+}
+
+/** False when the step has no target amount. */
+export function isPeriodTargetMet(
+  node: GoalNode,
+  entries: GoalEntry[],
+  date: string,
+): boolean {
+  if (node.targetAmount == null) {
+    return false;
+  }
+  return periodTotal(node, entries, date) >= node.targetAmount;
+}
 
 /** Repeating steps store planned days. An empty array still repeats. */
 export function isRepeating(node: GoalNode): boolean {
