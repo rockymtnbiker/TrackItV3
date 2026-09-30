@@ -3,6 +3,7 @@ import GoalDetailScreen from '../screens/GoalDetailScreen';
 import GoalsListScreen from '../screens/GoalsListScreen';
 import HabitDetailScreen from '../screens/HabitDetailScreen';
 import MilestoneDetailScreen from '../screens/MilestoneDetailScreen';
+import StepDetailScreen from '../screens/StepDetailScreen';
 
 /** Shared by Goals and Today stacks so detail screens can open from either tab. */
 export type DetailStackParamList = {
@@ -13,6 +14,7 @@ export type DetailStackParamList = {
 
 export type GoalsStackParamList = {
   GoalsList: undefined;
+  StepDetail: { goalId: string };
 } & DetailStackParamList;
 
 export type TodayStackParamList = {
@@ -43,6 +45,11 @@ export default function GoalsStackNavigator() {
         name="HabitDetail"
         component={HabitDetailScreen}
         options={{ title: 'Habit' }}
+      />
+      <Stack.Screen
+        name="StepDetail"
+        component={StepDetailScreen}
+        options={{ title: 'Step' }}
       />
     </Stack.Navigator>
   );

@@ -5,17 +5,15 @@ import {
   ActivityIndicator,
   Alert,
   AppState,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
-import { useHeaderHeight } from '@react-navigation/elements';
 import { ScrollView } from 'react-native-gesture-handler';
 import { EditableOrderedRow } from '../components/EditableOrderedRow';
+import { KeyboardSafe } from '../components/KeyboardSafe';
 import {
   FormDateRow,
   FormDescriptionField,
@@ -69,8 +67,6 @@ function withMilestoneSortOrder(steps: Milestone[]): Milestone[] {
 
 export default function GoalDetailScreen({ navigation, route }: Props) {
   const { goalId } = route.params;
-  const headerHeight = useHeaderHeight();
-
   const [goal, setGoal] = useState<Goal | null>(null);
   const [goalLoading, setGoalLoading] = useState(true);
   const [goalError, setGoalError] = useState<string | null>(null);
@@ -616,15 +612,12 @@ export default function GoalDetailScreen({ navigation, route }: Props) {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={headerHeight}
-    >
+    <KeyboardSafe style={styles.container}>
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="interactive"
       scrollEnabled={draggingId == null}
     >
       <View style={styles.sectionCard}>
@@ -860,7 +853,7 @@ export default function GoalDetailScreen({ navigation, route }: Props) {
         )}
       </Pressable>
     </ScrollView>
-    </KeyboardAvoidingView>
+    </KeyboardSafe>
   );
 }
 

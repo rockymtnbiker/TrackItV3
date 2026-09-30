@@ -234,6 +234,8 @@ export function FormInlineInput(props: {
   autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
   autoCorrect?: boolean;
   textContentType?: 'none' | 'emailAddress' | 'password' | 'newPassword';
+  returnKeyType?: 'done' | 'go' | 'next' | 'default';
+  onSubmitEditing?: () => void;
 }) {
   return <TextInput style={styles.formInlineInput} {...props} />;
 }

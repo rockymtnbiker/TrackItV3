@@ -4,7 +4,6 @@ import DateTimePicker, {
 } from '@react-native-community/datetimepicker';
 import { useMemo, useState, type ReactNode } from 'react';
 import {
-  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -15,6 +14,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { KeyboardSafe } from '../components/KeyboardSafe';
 import SwipeableRow from '../components/SwipeableRow';
 import {
   linkedHabitsForGoal,
@@ -1485,13 +1485,11 @@ export default function GoalsScreen() {
         transparent
         onRequestClose={closeForm}
       >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalOverlay}
-        >
+        <KeyboardSafe style={styles.modalOverlay} keyboardVerticalOffset={0}>
           <ScrollView
             contentContainerStyle={styles.modalScrollContent}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
           >
             <View style={styles.modalCard}>
               <View style={styles.formTitleRow}>
@@ -1523,6 +1521,14 @@ export default function GoalsScreen() {
                       onChangeText={setTitle}
                       placeholder="Enter title"
                       autoFocus
+                      returnKeyType={
+                        formMode?.action === 'create' ? 'done' : 'default'
+                      }
+                      onSubmitEditing={() => {
+                        if (formMode?.action === 'create' && title.trim()) {
+                          handleSave();
+                        }
+                      }}
                     />
                   </FormFieldRow>
 
@@ -1611,6 +1617,14 @@ export default function GoalsScreen() {
                       onChangeText={setTitle}
                       placeholder="Enter title"
                       autoFocus
+                      returnKeyType={
+                        formMode?.action === 'create' ? 'done' : 'default'
+                      }
+                      onSubmitEditing={() => {
+                        if (formMode?.action === 'create' && title.trim()) {
+                          handleSave();
+                        }
+                      }}
                     />
                   </FormFieldRow>
 
@@ -1699,6 +1713,14 @@ export default function GoalsScreen() {
                       onChangeText={setTitle}
                       placeholder="Enter title"
                       autoFocus
+                      returnKeyType={
+                        formMode?.action === 'create' ? 'done' : 'default'
+                      }
+                      onSubmitEditing={() => {
+                        if (formMode?.action === 'create' && title.trim()) {
+                          handleSave();
+                        }
+                      }}
                     />
                   </FormFieldRow>
 
@@ -1773,7 +1795,7 @@ export default function GoalsScreen() {
               </View>
             </View>
           </ScrollView>
-        </KeyboardAvoidingView>
+        </KeyboardSafe>
       </Modal>
 
       <Modal

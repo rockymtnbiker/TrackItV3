@@ -13,6 +13,7 @@ import {
 import { Pressable, ScrollView, Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { DraggableItem } from '../components/DraggableItem';
+import { KeyboardSafe } from '../components/KeyboardSafe';
 import {
   FormDateRow,
   FormFieldRow,
@@ -290,6 +291,7 @@ export default function GoalsListScreen({ navigation }: Props) {
       <ScrollView
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
         scrollEnabled={draggingId == null}
       >
         <View style={styles.headerRow}>
@@ -337,7 +339,7 @@ export default function GoalsListScreen({ navigation }: Props) {
                 index={index}
                 itemHeight={LIST_CARD_HEIGHT}
                 onPress={() =>
-                  navigation.navigate('GoalDetail', { goalId: goal.id })
+                  navigation.navigate('StepDetail', { goalId: goal.id })
                 }
                 onDragStart={() => setDraggingId(goal.id)}
                 onDragMove={() => {}}
@@ -416,7 +418,7 @@ export default function GoalsListScreen({ navigation }: Props) {
                   index={index}
                   itemHeight={LIST_CARD_HEIGHT}
                   onPress={() =>
-                    navigation.navigate('HabitDetail', { habitId: habit.id })
+                    navigation.navigate('StepDetail', { goalId: habit.id })
                   }
                   onDragStart={() => setDraggingId(habit.id)}
                   onDragMove={() => {}}
@@ -491,10 +493,11 @@ export default function GoalsListScreen({ navigation }: Props) {
         transparent
         onRequestClose={() => setCreateVisible(false)}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardSafe style={styles.modalOverlay} keyboardVerticalOffset={0}>
           <ScrollView
             contentContainerStyle={styles.modalScroll}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
           >
             <View style={styles.modalCard}>
               <Text style={styles.modalTitle}>Add Goal</Text>
@@ -505,6 +508,12 @@ export default function GoalsListScreen({ navigation }: Props) {
                     onChangeText={setTitle}
                     placeholder="Enter title"
                     autoFocus
+                    returnKeyType="done"
+                    onSubmitEditing={() => {
+                      if (title.trim()) {
+                        void handleCreateGoal();
+                      }
+                    }}
                   />
                 </FormFieldRow>
                 <FormSelectRow
@@ -606,7 +615,7 @@ export default function GoalsListScreen({ navigation }: Props) {
               </View>
             </View>
           </ScrollView>
-        </View>
+        </KeyboardSafe>
       </Modal>
     </SafeAreaView>
   );

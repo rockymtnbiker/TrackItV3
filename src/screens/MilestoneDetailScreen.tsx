@@ -5,17 +5,15 @@ import {
   ActivityIndicator,
   Alert,
   AppState,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
-import { useHeaderHeight } from '@react-navigation/elements';
 import { ScrollView } from 'react-native-gesture-handler';
 import { EditableOrderedRow } from '../components/EditableOrderedRow';
+import { KeyboardSafe } from '../components/KeyboardSafe';
 import {
   FormDateRow,
   FormDescriptionField,
@@ -61,8 +59,6 @@ function parseOptionalTarget(value: string): number | undefined {
 
 export default function MilestoneDetailScreen({ navigation, route }: Props) {
   const { milestoneId } = route.params;
-  const headerHeight = useHeaderHeight();
-
   const [milestone, setMilestone] = useState<Milestone | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -461,15 +457,12 @@ export default function MilestoneDetailScreen({ navigation, route }: Props) {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={headerHeight}
-    >
+    <KeyboardSafe style={styles.container}>
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="interactive"
       scrollEnabled={draggingId == null}
     >
       <View style={styles.sectionCard}>
@@ -637,7 +630,7 @@ export default function MilestoneDetailScreen({ navigation, route }: Props) {
         )}
       </Pressable>
     </ScrollView>
-    </KeyboardAvoidingView>
+    </KeyboardSafe>
   );
 }
 

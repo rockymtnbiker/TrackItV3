@@ -2,14 +2,13 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { KeyboardSafe } from '../../components/KeyboardSafe';
 import {
   FormFieldRow,
   FormInlineInput,
@@ -43,10 +42,7 @@ export default function LoginScreen({ navigation }: Props) {
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
+      <KeyboardSafe style={styles.flex}>
         <View style={styles.content}>
           <Text style={styles.title}>Log in</Text>
           <Text style={styles.subtitle}>Welcome back to TrackIt</Text>
@@ -107,7 +103,7 @@ export default function LoginScreen({ navigation }: Props) {
             </Text>
           </Pressable>
         </View>
-      </KeyboardAvoidingView>
+      </KeyboardSafe>
     </SafeAreaView>
   );
 }

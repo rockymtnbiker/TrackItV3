@@ -1,18 +1,16 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { useHeaderHeight } from '@react-navigation/elements';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   AppState,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { KeyboardSafe } from '../components/KeyboardSafe';
 import {
   FormDateRow,
   FormFieldRow,
@@ -30,8 +28,6 @@ type Props = NativeStackScreenProps<DetailStackParamList, 'HabitDetail'>;
 
 export default function HabitDetailScreen({ navigation, route }: Props) {
   const { habitId } = route.params;
-  const headerHeight = useHeaderHeight();
-
   const [habit, setHabit] = useState<Habit | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -219,15 +215,12 @@ export default function HabitDetailScreen({ navigation, route }: Props) {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={headerHeight}
-    >
+    <KeyboardSafe style={styles.container}>
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="interactive"
     >
       <View style={styles.sectionCard}>
         <View style={styles.fields}>
@@ -272,7 +265,7 @@ export default function HabitDetailScreen({ navigation, route }: Props) {
         )}
       </Pressable>
     </ScrollView>
-    </KeyboardAvoidingView>
+    </KeyboardSafe>
   );
 }
 

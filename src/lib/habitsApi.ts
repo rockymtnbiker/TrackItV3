@@ -1,23 +1,15 @@
 import type { Habit, HabitStatus, Weekday } from '../types';
 import { ALL_WEEKDAYS } from '../types';
 import { addDays, getWeekday, todayDateString } from '../utils/date';
+import {
+  ENTRIES_TABLE,
+  GOALS_TABLE,
+  amountToNumber,
+  plannedDaysToWeekdays,
+  weekdaysToPlannedDays,
+  type GoalsV2Row,
+} from './goalTables';
 import { supabase } from './supabase';
-
-type HabitRow = {
-  id: string;
-  goal_id: string | null;
-  milestone_id: string | null;
-  user_id: string;
-  title: string;
-  status: string;
-  scheduled_days: string[] | null;
-  weekly_target: number | null;
-  start_date: string | null;
-  end_date: string | null;
-  created_date: string | null;
-  sort_order: number | null;
-  deleted_at: string | null;
-};
 
 export type HabitInput = {
   title: string;
@@ -48,37 +40,61 @@ export type ActiveHabit = Habit & {
   parentMilestone: ActiveHabitParent | null;
 };
 
-type ParentRow = {
-  id: string;
-  title: string;
-  created_date: string | null;
-  target_start_date: string | null;
-  target_end_date: string | null;
-  deleted_at: string | null;
+type HabitLinks = {
+  goalId: string | null;
+  milestoneId: string | null;
 };
 
-type ActiveHabitRow = HabitRow & {
-  goal: ParentRow | ParentRow[] | null;
-  milestone: ParentRow | ParentRow[] | null;
-};
-
-function mapScheduledDays(days: string[] | null): Weekday[] {
-  if (!days || days.length === 0) {
-    return [...ALL_WEEKDAYS];
+function linksForHabit(
+  row: GoalsV2Row,
+  parents: Map<string, GoalsV2Row>,
+): HabitLinks {
+  if (!row.parent_id) {
+    return { goalId: null, milestoneId: null };
   }
-  return days.filter((day): day is Weekday =>
-    (ALL_WEEKDAYS as string[]).includes(day),
-  );
+
+  const parent = parents.get(row.parent_id);
+  if (!parent || parent.planned_days != null) {
+    return { goalId: null, milestoneId: null };
+  }
+  if (parent.parent_id == null) {
+    return { goalId: parent.id, milestoneId: null };
+  }
+  return { goalId: parent.parent_id, milestoneId: parent.id };
 }
 
-function unwrapRelation<T>(value: T | T[] | null | undefined): T | null {
-  if (value == null) {
-    return null;
+function mapRowToHabit(row: GoalsV2Row, links: HabitLinks): Habit {
+  const scheduledDays = plannedDaysToWeekdays(row.planned_days);
+  let linkedGoalId: string | undefined;
+  let linkedGoalType: Habit['linkedGoalType'];
+
+  if (links.milestoneId) {
+    linkedGoalId = links.milestoneId;
+    linkedGoalType = 'milestone';
+  } else if (links.goalId) {
+    linkedGoalId = links.goalId;
+    linkedGoalType = 'goal';
   }
-  return Array.isArray(value) ? (value[0] ?? null) : value;
+
+  return {
+    id: row.id,
+    title: row.title,
+    sortOrder: row.sort_order ?? 0,
+    scheduledDays,
+    weeklyTarget: amountToNumber(row.target_amount) ?? scheduledDays.length,
+    linkedGoalId,
+    linkedGoalType,
+    completionLog: [],
+    streakCount: 0,
+    createdDate: (row.created_date ?? '').slice(0, 10),
+    startDate: row.actual_start_date || undefined,
+    endDate: row.target_end_date || undefined,
+    status: (row.status as HabitStatus) || 'active',
+    deletedAt: row.deleted_at ? row.deleted_at.slice(0, 10) : undefined,
+  };
 }
 
-function mapParentRow(row: ParentRow | null): ActiveHabitParent | null {
+function mapParentRow(row: GoalsV2Row | undefined): ActiveHabitParent | null {
   if (!row) {
     return null;
   }
@@ -92,71 +108,32 @@ function mapParentRow(row: ParentRow | null): ActiveHabitParent | null {
   };
 }
 
-function mapRowToHabit(row: HabitRow): Habit {
-  const scheduledDays = mapScheduledDays(row.scheduled_days);
-  let linkedGoalId: string | undefined;
-  let linkedGoalType: Habit['linkedGoalType'];
-
-  if (row.milestone_id) {
-    linkedGoalId = row.milestone_id;
-    linkedGoalType = 'milestone';
-  } else if (row.goal_id) {
-    linkedGoalId = row.goal_id;
-    linkedGoalType = 'goal';
-  }
-
-  return {
-    id: row.id,
-    title: row.title,
-    sortOrder: row.sort_order ?? 0,
-    scheduledDays,
-    weeklyTarget: row.weekly_target ?? scheduledDays.length,
-    linkedGoalId,
-    linkedGoalType,
-    completionLog: [],
-    streakCount: 0,
-    createdDate: (row.created_date ?? '').slice(0, 10),
-    startDate: row.start_date || undefined,
-    endDate: row.end_date || undefined,
-    status: (row.status as HabitStatus) || 'active',
-    deletedAt: row.deleted_at ? row.deleted_at.slice(0, 10) : undefined,
-  };
-}
-
-function mapRowToActiveHabit(row: ActiveHabitRow): ActiveHabit {
-  return {
-    ...mapRowToHabit(row),
-    parentGoal: mapParentRow(unwrapRelation(row.goal)),
-    parentMilestone: mapParentRow(unwrapRelation(row.milestone)),
-  };
-}
-
 function toRowUpdates(updates: HabitUpdates): Record<string, unknown> {
   const row: Record<string, unknown> = {};
   if (updates.title !== undefined) {
     row.title = updates.title;
   }
-  if (updates.goalId !== undefined) {
-    row.goal_id = updates.goalId || null;
-  }
-  if (updates.milestoneId !== undefined) {
-    row.milestone_id = updates.milestoneId || null;
+  if (updates.goalId !== undefined || updates.milestoneId !== undefined) {
+    const milestoneId =
+      updates.milestoneId !== undefined ? updates.milestoneId || null : undefined;
+    const goalId =
+      updates.goalId !== undefined ? updates.goalId || null : undefined;
+    row.parent_id = milestoneId ?? goalId ?? null;
   }
   if (updates.status !== undefined) {
     row.status = updates.status;
   }
   if (updates.scheduledDays !== undefined) {
-    row.scheduled_days = updates.scheduledDays;
-    row.weekly_target =
-      updates.weeklyTarget ?? updates.scheduledDays.length;
+    row.planned_days = weekdaysToPlannedDays(updates.scheduledDays);
+    row.target_amount = updates.weeklyTarget ?? updates.scheduledDays.length;
   } else if (updates.weeklyTarget !== undefined) {
-    row.weekly_target = updates.weeklyTarget;
+    row.target_amount = updates.weeklyTarget;
   }
   if (updates.startDate !== undefined) {
-    row.start_date = updates.startDate || null;
+    row.actual_start_date = updates.startDate || null;
   }
   if (updates.endDate !== undefined) {
-    row.end_date = updates.endDate || null;
+    row.target_end_date = updates.endDate || null;
   }
   if (updates.sortOrder !== undefined) {
     row.sort_order = updates.sortOrder;
@@ -176,14 +153,42 @@ async function requireUserId(): Promise<string> {
   return userId;
 }
 
+async function fetchRowsByIds(ids: string[]): Promise<Map<string, GoalsV2Row>> {
+  const unique = [...new Set(ids)];
+  const map = new Map<string, GoalsV2Row>();
+  if (unique.length === 0) {
+    return map;
+  }
+
+  const { data, error } = await supabase
+    .from(GOALS_TABLE)
+    .select('*')
+    .in('id', unique);
+
+  if (error) {
+    throw error;
+  }
+
+  for (const row of (data as GoalsV2Row[] | null) ?? []) {
+    map.set(row.id, row);
+  }
+  return map;
+}
+
+async function mapHabitRows(rows: GoalsV2Row[]): Promise<Habit[]> {
+  const parentIds = rows.flatMap((row) => (row.parent_id ? [row.parent_id] : []));
+  const parents = await fetchRowsByIds(parentIds);
+  return rows.map((row) => mapRowToHabit(row, linksForHabit(row, parents)));
+}
+
 export async function getHabitsForGoal(goalId: string): Promise<Habit[]> {
   const userId = await requireUserId();
   const { data, error } = await supabase
-    .from('habits')
+    .from(GOALS_TABLE)
     .select('*')
     .eq('user_id', userId)
-    .eq('goal_id', goalId)
-    .is('milestone_id', null)
+    .eq('parent_id', goalId)
+    .not('planned_days', 'is', null)
     .is('deleted_at', null)
     .order('sort_order', { ascending: true });
 
@@ -191,7 +196,10 @@ export async function getHabitsForGoal(goalId: string): Promise<Habit[]> {
     throw error;
   }
 
-  return (data as HabitRow[] | null)?.map(mapRowToHabit) ?? [];
+  const habits = await mapHabitRows((data as GoalsV2Row[] | null) ?? []);
+  return habits.filter(
+    (habit) => habit.linkedGoalType === 'goal' && habit.linkedGoalId === goalId,
+  );
 }
 
 export async function getHabitsForMilestone(
@@ -199,10 +207,11 @@ export async function getHabitsForMilestone(
 ): Promise<Habit[]> {
   const userId = await requireUserId();
   const { data, error } = await supabase
-    .from('habits')
+    .from(GOALS_TABLE)
     .select('*')
     .eq('user_id', userId)
-    .eq('milestone_id', milestoneId)
+    .eq('parent_id', milestoneId)
+    .not('planned_days', 'is', null)
     .is('deleted_at', null)
     .order('sort_order', { ascending: true });
 
@@ -210,17 +219,22 @@ export async function getHabitsForMilestone(
     throw error;
   }
 
-  return (data as HabitRow[] | null)?.map(mapRowToHabit) ?? [];
+  const habits = await mapHabitRows((data as GoalsV2Row[] | null) ?? []);
+  return habits.filter(
+    (habit) =>
+      habit.linkedGoalType === 'milestone' &&
+      habit.linkedGoalId === milestoneId,
+  );
 }
 
 export async function getStandaloneHabits(): Promise<Habit[]> {
   const userId = await requireUserId();
   const { data, error } = await supabase
-    .from('habits')
+    .from(GOALS_TABLE)
     .select('*')
     .eq('user_id', userId)
-    .is('goal_id', null)
-    .is('milestone_id', null)
+    .is('parent_id', null)
+    .not('planned_days', 'is', null)
     .is('deleted_at', null)
     .order('sort_order', { ascending: true });
 
@@ -228,35 +242,16 @@ export async function getStandaloneHabits(): Promise<Habit[]> {
     throw error;
   }
 
-  return (data as HabitRow[] | null)?.map(mapRowToHabit) ?? [];
+  return mapHabitRows((data as GoalsV2Row[] | null) ?? []);
 }
 
 export async function getAllActiveHabits(): Promise<ActiveHabit[]> {
   const userId = await requireUserId();
   const { data, error } = await supabase
-    .from('habits')
-    .select(
-      `
-      *,
-      goal:goals (
-        id,
-        title,
-        created_date,
-        target_start_date,
-        target_end_date,
-        deleted_at
-      ),
-      milestone:milestones (
-        id,
-        title,
-        created_date,
-        target_start_date,
-        target_end_date,
-        deleted_at
-      )
-    `,
-    )
+    .from(GOALS_TABLE)
+    .select('*')
     .eq('user_id', userId)
+    .not('planned_days', 'is', null)
     .eq('status', 'active')
     .is('deleted_at', null)
     .order('sort_order', { ascending: true });
@@ -265,24 +260,62 @@ export async function getAllActiveHabits(): Promise<ActiveHabit[]> {
     throw error;
   }
 
-  return (data as ActiveHabitRow[] | null)?.map(mapRowToActiveHabit) ?? [];
+  const rows = (data as GoalsV2Row[] | null) ?? [];
+  const parents = await fetchRowsByIds(
+    rows.flatMap((row) => (row.parent_id ? [row.parent_id] : [])),
+  );
+  const grandparentIds: string[] = [];
+  for (const parent of parents.values()) {
+    if (parent.planned_days == null && parent.parent_id) {
+      grandparentIds.push(parent.parent_id);
+    }
+  }
+  const grandparents = await fetchRowsByIds(grandparentIds);
+
+  return rows.map((row) => {
+    const links = linksForHabit(row, parents);
+    const parent = row.parent_id ? parents.get(row.parent_id) : undefined;
+    let parentGoal: ActiveHabitParent | null = null;
+    let parentMilestone: ActiveHabitParent | null = null;
+
+    if (parent && parent.planned_days == null && parent.parent_id == null) {
+      parentGoal = mapParentRow(parent);
+    } else if (parent && parent.planned_days == null && parent.parent_id) {
+      parentMilestone = mapParentRow(parent);
+      const goal = grandparents.get(parent.parent_id);
+      if (goal && goal.planned_days == null && goal.parent_id == null) {
+        parentGoal = mapParentRow(goal);
+      }
+    }
+
+    return {
+      ...mapRowToHabit(row, links),
+      parentGoal,
+      parentMilestone,
+    };
+  });
 }
 
 export async function getHabit(id: string): Promise<Habit | null> {
   const userId = await requireUserId();
   const { data, error } = await supabase
-    .from('habits')
+    .from(GOALS_TABLE)
     .select('*')
     .eq('user_id', userId)
     .eq('id', id)
+    .not('planned_days', 'is', null)
     .is('deleted_at', null)
     .maybeSingle();
 
   if (error) {
     throw error;
   }
+  if (!data) {
+    return null;
+  }
 
-  return data ? mapRowToHabit(data as HabitRow) : null;
+  const [habit] = await mapHabitRows([data as GoalsV2Row]);
+  return habit ?? null;
 }
 
 export async function createHabit(habit: HabitInput): Promise<Habit> {
@@ -292,17 +325,18 @@ export async function createHabit(habit: HabitInput): Promise<Habit> {
     : [...ALL_WEEKDAYS];
 
   const { data, error } = await supabase
-    .from('habits')
+    .from(GOALS_TABLE)
     .insert({
       user_id: userId,
-      goal_id: habit.goalId || null,
-      milestone_id: habit.milestoneId || null,
+      parent_id: habit.milestoneId || habit.goalId || null,
       title: habit.title,
       status: habit.status ?? 'active',
-      scheduled_days: scheduledDays,
-      weekly_target: habit.weeklyTarget ?? scheduledDays.length,
-      start_date: habit.startDate || null,
-      end_date: habit.endDate || null,
+      planned_days: weekdaysToPlannedDays(scheduledDays),
+      target_amount: habit.weeklyTarget ?? scheduledDays.length,
+      repeat_period: 'week',
+      unit: null,
+      actual_start_date: habit.startDate || null,
+      target_end_date: habit.endDate || null,
       sort_order: habit.sortOrder ?? 0,
     })
     .select('*')
@@ -312,7 +346,8 @@ export async function createHabit(habit: HabitInput): Promise<Habit> {
     throw error;
   }
 
-  return mapRowToHabit(data as HabitRow);
+  const [created] = await mapHabitRows([data as GoalsV2Row]);
+  return created;
 }
 
 export async function updateHabit(
@@ -321,9 +356,10 @@ export async function updateHabit(
 ): Promise<Habit> {
   const row = toRowUpdates(updates);
   const { data, error } = await supabase
-    .from('habits')
+    .from(GOALS_TABLE)
     .update(row)
     .eq('id', id)
+    .not('planned_days', 'is', null)
     .select('*')
     .single();
 
@@ -331,14 +367,16 @@ export async function updateHabit(
     throw error;
   }
 
-  return mapRowToHabit(data as HabitRow);
+  const [updated] = await mapHabitRows([data as GoalsV2Row]);
+  return updated;
 }
 
 export async function softDeleteHabit(id: string): Promise<void> {
   const { error } = await supabase
-    .from('habits')
+    .from(GOALS_TABLE)
     .update({ deleted_at: new Date().toISOString() })
-    .eq('id', id);
+    .eq('id', id)
+    .not('planned_days', 'is', null);
 
   if (error) {
     throw error;
@@ -346,7 +384,11 @@ export async function softDeleteHabit(id: string): Promise<void> {
 }
 
 export async function deleteHabit(id: string): Promise<void> {
-  const { error } = await supabase.from('habits').delete().eq('id', id);
+  const { error } = await supabase
+    .from(GOALS_TABLE)
+    .delete()
+    .eq('id', id)
+    .not('planned_days', 'is', null);
 
   if (error) {
     throw error;
@@ -358,13 +400,14 @@ export async function addCompletion(
   date: string,
 ): Promise<void> {
   const userId = await requireUserId();
-  const { error } = await supabase.from('habit_completions').upsert(
+  const { error } = await supabase.from(ENTRIES_TABLE).upsert(
     {
-      habit_id: habitId,
+      goal_id: habitId,
       user_id: userId,
-      completed_date: date,
+      entry_date: date,
+      value: null,
     },
-    { onConflict: 'habit_id,completed_date' },
+    { onConflict: 'goal_id,entry_date' },
   );
 
   if (error) {
@@ -378,11 +421,11 @@ export async function removeCompletion(
 ): Promise<void> {
   const userId = await requireUserId();
   const { error } = await supabase
-    .from('habit_completions')
+    .from(ENTRIES_TABLE)
     .delete()
     .eq('user_id', userId)
-    .eq('habit_id', habitId)
-    .eq('completed_date', date);
+    .eq('goal_id', habitId)
+    .eq('entry_date', date);
 
   if (error) {
     throw error;
@@ -396,17 +439,17 @@ export async function getCompletionsForHabit(
 ): Promise<string[]> {
   const userId = await requireUserId();
   let query = supabase
-    .from('habit_completions')
-    .select('completed_date')
+    .from(ENTRIES_TABLE)
+    .select('entry_date')
     .eq('user_id', userId)
-    .eq('habit_id', habitId)
-    .order('completed_date', { ascending: true });
+    .eq('goal_id', habitId)
+    .order('entry_date', { ascending: true });
 
   if (startDate) {
-    query = query.gte('completed_date', startDate);
+    query = query.gte('entry_date', startDate);
   }
   if (endDate) {
-    query = query.lte('completed_date', endDate);
+    query = query.lte('entry_date', endDate);
   }
 
   const { data, error } = await query;
@@ -415,9 +458,8 @@ export async function getCompletionsForHabit(
   }
 
   return (
-    (data as { completed_date: string }[] | null)?.map(
-      (row) => row.completed_date,
-    ) ?? []
+    (data as { entry_date: string }[] | null)?.map((row) => row.entry_date) ??
+    []
   );
 }
 

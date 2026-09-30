@@ -33,6 +33,10 @@ type Props = {
   swipeToDelete?: boolean;
   onTitleChange: (title: string) => void;
   onOpen: () => void;
+  /** When set, tapping the title opens the row instead of editing it. */
+  onRowPress?: () => void;
+  /** Small repeat icon beside the title. */
+  repeating?: boolean;
   onDelete: () => void;
   onDragStart: () => void;
   onDragMove: (dy: number) => void;
@@ -78,6 +82,8 @@ export function EditableOrderedRow({
   swipeToDelete = false,
   onTitleChange,
   onOpen,
+  onRowPress,
+  repeating = false,
   onDelete,
   onDragStart,
   onDragMove,
@@ -146,9 +152,9 @@ export function EditableOrderedRow({
       ) : null}
 
       <Pressable
-        onPress={startEditingTitle}
+        onPress={onRowPress ?? startEditingTitle}
         style={[styles.mainHit, { minHeight: rowHeight - 8 }]}
-        disabled={editingTitle}
+        disabled={onRowPress ? false : editingTitle}
       >
         {parentTitle ? (
           <Text style={styles.parentTitle} numberOfLines={1}>
@@ -165,10 +171,10 @@ export function EditableOrderedRow({
           value={title}
           onChangeText={onTitleChange}
           placeholder={titlePlaceholder}
-          editable={editingTitle}
+          editable={onRowPress ? false : editingTitle}
           onBlur={() => setEditingTitle(false)}
           showSoftInputOnFocus
-          pointerEvents={editingTitle ? 'auto' : 'none'}
+          pointerEvents={onRowPress || !editingTitle ? 'none' : 'auto'}
         />
         {subtitle ? (
           <Text
@@ -182,6 +188,15 @@ export function EditableOrderedRow({
           </Text>
         ) : null}
       </Pressable>
+
+      {repeating ? (
+        <Ionicons
+          name="repeat"
+          size={16}
+          color="#8e8e93"
+          accessibilityLabel="Repeats"
+        />
+      ) : null}
 
       <Pressable
         onPress={onOpen}

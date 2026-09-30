@@ -5,26 +5,14 @@ import type {
   TargetPeriod,
 } from '../types';
 import { todayDateString } from '../utils/date';
+import {
+  GOALS_TABLE,
+  amountToNumber,
+  periodToRepeatPeriod,
+  repeatPeriodToPeriod,
+  type GoalsV2Row,
+} from './goalTables';
 import { supabase } from './supabase';
-
-type GoalRow = {
-  id: string;
-  user_id: string;
-  title: string;
-  description: string | null;
-  category: string | null;
-  target: number | string | null;
-  unit: string | null;
-  period: string | null;
-  status: string;
-  target_start_date: string | null;
-  target_end_date: string | null;
-  actual_start_date: string | null;
-  actual_end_date: string | null;
-  created_date: string | null;
-  sort_order: number | null;
-  deleted_at: string | null;
-};
 
 export type GoalInput = {
   title: string;
@@ -43,12 +31,7 @@ export type GoalInput = {
 
 export type GoalUpdates = Partial<GoalInput>;
 
-function mapRowToGoal(row: GoalRow): Goal {
-  const target =
-    row.target == null || row.target === ''
-      ? undefined
-      : Number(row.target);
-
+function mapRowToGoal(row: GoalsV2Row): Goal {
   return {
     id: row.id,
     title: row.title,
@@ -60,9 +43,9 @@ function mapRowToGoal(row: GoalRow): Goal {
     actualStartDate: row.actual_start_date || undefined,
     actualEndDate: row.actual_end_date || undefined,
     category: (row.category as GoalCategory | null) || undefined,
-    target: Number.isFinite(target) ? target : undefined,
+    target: amountToNumber(row.target_amount),
     unit: row.unit || undefined,
-    period: (row.period as TargetPeriod | null) || undefined,
+    period: repeatPeriodToPeriod(row.repeat_period),
     status: (row.status as GoalStatus) || 'active',
     deletedAt: row.deleted_at ? row.deleted_at.slice(0, 10) : undefined,
   };
@@ -80,14 +63,13 @@ function toRowUpdates(updates: GoalUpdates): Record<string, unknown> {
     row.category = updates.category || null;
   }
   if (updates.target !== undefined) {
-    row.target = updates.target ?? null;
+    row.target_amount = updates.target ?? null;
   }
   if (updates.unit !== undefined) {
     row.unit = updates.unit || null;
   }
   if (updates.period !== undefined) {
-    row.period =
-      updates.period && updates.period !== 'None' ? updates.period : null;
+    row.repeat_period = periodToRepeatPeriod(updates.period);
   }
   if (updates.status !== undefined) {
     row.status = updates.status;
@@ -125,9 +107,11 @@ async function requireUserId(): Promise<string> {
 export async function getGoals(): Promise<Goal[]> {
   const userId = await requireUserId();
   const { data, error } = await supabase
-    .from('goals')
+    .from(GOALS_TABLE)
     .select('*')
     .eq('user_id', userId)
+    .is('parent_id', null)
+    .is('planned_days', null)
     .is('deleted_at', null)
     .order('sort_order', { ascending: true });
 
@@ -135,22 +119,23 @@ export async function getGoals(): Promise<Goal[]> {
     throw error;
   }
 
-  return (data as GoalRow[] | null)?.map(mapRowToGoal) ?? [];
+  return (data as GoalsV2Row[] | null)?.map(mapRowToGoal) ?? [];
 }
 
 export async function createGoal(goal: GoalInput): Promise<Goal> {
   const userId = await requireUserId();
   const { data, error } = await supabase
-    .from('goals')
+    .from(GOALS_TABLE)
     .insert({
       user_id: userId,
+      parent_id: null,
       title: goal.title,
       description: goal.description?.trim() || null,
       category: goal.category || null,
-      target: goal.target ?? null,
+      target_amount: goal.target ?? null,
       unit: goal.unit || null,
-      period:
-        goal.period && goal.period !== 'None' ? goal.period : null,
+      repeat_period: periodToRepeatPeriod(goal.period),
+      planned_days: null,
       status: goal.status ?? 'active',
       target_start_date: goal.targetStartDate || null,
       target_end_date: goal.targetEndDate || null,
@@ -165,7 +150,7 @@ export async function createGoal(goal: GoalInput): Promise<Goal> {
     throw error;
   }
 
-  return mapRowToGoal(data as GoalRow);
+  return mapRowToGoal(data as GoalsV2Row);
 }
 
 export async function updateGoal(
@@ -174,9 +159,11 @@ export async function updateGoal(
 ): Promise<Goal> {
   const row = toRowUpdates(updates);
   const { data, error } = await supabase
-    .from('goals')
+    .from(GOALS_TABLE)
     .update(row)
     .eq('id', id)
+    .is('parent_id', null)
+    .is('planned_days', null)
     .select('*')
     .single();
 
@@ -184,7 +171,7 @@ export async function updateGoal(
     throw error;
   }
 
-  return mapRowToGoal(data as GoalRow);
+  return mapRowToGoal(data as GoalsV2Row);
 }
 
 /**
@@ -199,10 +186,12 @@ export async function setGoalStatus(
 ): Promise<Goal> {
   const userId = await requireUserId();
   const { data: existing, error: fetchError } = await supabase
-    .from('goals')
+    .from(GOALS_TABLE)
     .select('*')
     .eq('id', id)
     .eq('user_id', userId)
+    .is('parent_id', null)
+    .is('planned_days', null)
     .maybeSingle();
 
   if (fetchError) {
@@ -212,7 +201,7 @@ export async function setGoalStatus(
     throw new Error('Goal not found.');
   }
 
-  const row = existing as GoalRow;
+  const row = existing as GoalsV2Row;
   const today = todayDateString();
   const updates: Record<string, unknown> = { status: newStatus };
 
@@ -228,9 +217,11 @@ export async function setGoalStatus(
   }
 
   const { data, error } = await supabase
-    .from('goals')
+    .from(GOALS_TABLE)
     .update(updates)
     .eq('id', id)
+    .is('parent_id', null)
+    .is('planned_days', null)
     .select('*')
     .single();
 
@@ -238,14 +229,16 @@ export async function setGoalStatus(
     throw error;
   }
 
-  return mapRowToGoal(data as GoalRow);
+  return mapRowToGoal(data as GoalsV2Row);
 }
 
 export async function softDeleteGoal(id: string): Promise<void> {
   const { error } = await supabase
-    .from('goals')
+    .from(GOALS_TABLE)
     .update({ deleted_at: new Date().toISOString() })
-    .eq('id', id);
+    .eq('id', id)
+    .is('parent_id', null)
+    .is('planned_days', null);
 
   if (error) {
     throw error;
@@ -253,7 +246,12 @@ export async function softDeleteGoal(id: string): Promise<void> {
 }
 
 export async function deleteGoal(id: string): Promise<void> {
-  const { error } = await supabase.from('goals').delete().eq('id', id);
+  const { error } = await supabase
+    .from(GOALS_TABLE)
+    .delete()
+    .eq('id', id)
+    .is('parent_id', null)
+    .is('planned_days', null);
 
   if (error) {
     throw error;
