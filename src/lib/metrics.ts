@@ -1,5 +1,5 @@
 import type { GoalEntry, Goal } from '../types/goal';
-import { getWeekStart, parseDateString, toDateString } from '../utils/date';
+import { addDays, getWeekStart, parseDateString, toDateString } from '../utils/date';
 import { buildChildrenMap, isRepeating } from './goalTree';
 
 function calendarDaysBetween(start: string, end: string): number {
@@ -143,4 +143,80 @@ export function monthlyPlanned(
   }
 
   return total;
+}
+
+export type ProgressPoint = {
+  date: string;
+  /** Null after today. Cumulative logged amount through that day, as a percent of target. */
+  actualPct: number | null;
+  expectedPct: number;
+};
+
+export type ProgressSeries = {
+  days: ProgressPoint[];
+  maxPct: number;
+};
+
+/**
+ * One point per calendar day from start through max(end, today).
+ * Entries are already the same-unit amounts the progress bar rolls up.
+ * Expected percent uses the pace tick: elapsed days / total days, clamped at 100.
+ */
+export function buildProgressSeries({
+  entries,
+  startDate,
+  endDate,
+  target,
+  today,
+}: {
+  entries: GoalEntry[];
+  startDate: string;
+  endDate: string;
+  target: number;
+  today: string;
+}): ProgressSeries {
+  const start = startDate.slice(0, 10);
+  const end = endDate.slice(0, 10);
+  const todayDate = today.slice(0, 10);
+  const last = end > todayDate ? end : todayDate;
+  const totalDays = calendarDaysBetween(start, end) + 1;
+
+  const byDate = new Map<string, number>();
+  let beforeStart = 0;
+  for (const entry of entries) {
+    if (entry.value == null) {
+      continue;
+    }
+    const date = entry.entryDate.slice(0, 10);
+    if (date < start) {
+      beforeStart += entry.value;
+    } else if (date <= last) {
+      byDate.set(date, (byDate.get(date) ?? 0) + entry.value);
+    }
+  }
+
+  const days: ProgressPoint[] = [];
+  let cumulative = beforeStart;
+  if (start <= last && totalDays > 0) {
+    for (let date = start; date <= last; date = addDays(date, 1)) {
+      cumulative += byDate.get(date) ?? 0;
+      const elapsed = calendarDaysBetween(start, date) + 1;
+      const expectedPct =
+        totalDays <= 0 ? 0 : Math.min(100, (elapsed / totalDays) * 100);
+      let actualPct: number | null = null;
+      if (date <= todayDate) {
+        actualPct = target > 0 ? (cumulative / target) * 100 : 0;
+      }
+      days.push({ date, actualPct, expectedPct });
+    }
+  }
+
+  let maxPct = 100;
+  for (const day of days) {
+    if (day.actualPct != null && day.actualPct > maxPct) {
+      maxPct = day.actualPct;
+    }
+  }
+
+  return { days, maxPct };
 }

@@ -25,6 +25,7 @@ import {
 } from '../components/FormFields';
 import { KeyboardSafe } from '../components/KeyboardSafe';
 import { PendingStatusCircle } from '../components/PendingStatusCircle';
+import { ProgressLineChart } from '../components/ProgressLineChart';
 import { UNIT_OPTIONS } from '../constants';
 import {
   createGoal,
@@ -42,6 +43,7 @@ import {
   rollupTotal,
 } from '../lib/goalTree';
 import {
+  buildProgressSeries,
   dailyAmounts,
   monthlyPlanned,
   planSources,
@@ -102,6 +104,24 @@ function parseAmount(value: string): number | null {
 
 function periodWord(period: RepeatPeriod | null): string {
   return period === 'month' ? 'month' : 'week';
+}
+
+/** Same-unit daily totals the progress bar rolls up, including days before the start. */
+function rolledUpEntries(
+  node: Goal,
+  nodes: Goal[],
+  entries: GoalEntry[],
+  endDate: string,
+  today: string,
+): GoalEntry[] {
+  const last = endDate.slice(0, 10) > today ? endDate.slice(0, 10) : today;
+  const amounts = dailyAmounts(node, nodes, entries, '1970-01-01', last);
+  return [...amounts].map(([date, value]) => ({
+    id: date,
+    goalId: node.id,
+    entryDate: date,
+    value,
+  }));
 }
 
 function subtreeIds(rootId: string, nodes: Goal[]): string[] {
@@ -1041,6 +1061,26 @@ export default function StepDetailScreen({ navigation, route }: Props) {
                 />
               ) : null}
             </View>
+            {pace &&
+            progressNode.targetAmount != null &&
+            progressNode.targetEndDate ? (
+              <ProgressLineChart
+                series={buildProgressSeries({
+                  entries: rolledUpEntries(
+                    progressNode,
+                    allNodes,
+                    entries,
+                    progressNode.targetEndDate,
+                    today,
+                  ),
+                  startDate:
+                    progressNode.actualStartDate ?? progressNode.createdDate,
+                  endDate: progressNode.targetEndDate,
+                  target: progressNode.targetAmount,
+                  today,
+                })}
+              />
+            ) : null}
             {!repeatOn && pace ? (
               <Text
                 style={[
