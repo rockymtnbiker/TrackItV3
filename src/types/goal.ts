@@ -1,8 +1,8 @@
-export type GoalNodeStatus = 'pending' | 'active' | 'done';
+export type GoalStatus = 'pending' | 'active' | 'done';
 
 export type RepeatPeriod = 'week' | 'month';
 
-export type GoalNode = {
+export type Goal = {
   id: string;
   userId: string;
   parentId: string | null;
@@ -10,7 +10,7 @@ export type GoalNode = {
   description: string | null;
   category: string | null;
   sortOrder: number;
-  status: GoalNodeStatus;
+  status: GoalStatus;
   targetStartDate: string | null;
   targetEndDate: string | null;
   actualStartDate: string | null;

@@ -10,17 +10,17 @@ import {
   Text,
   View,
 } from 'react-native';
-import { Pressable, ScrollView, Swipeable } from 'react-native-gesture-handler';
+import { Pressable, ScrollView } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { DraggableItem } from '../components/DraggableItem';
 import { KeyboardSafe } from '../components/KeyboardSafe';
 import { FormFieldRow, FormInlineInput } from '../components/FormFields';
 import {
-  createGoalNode,
-  deleteGoalNode,
-  getAllGoalNodes,
+  createGoal,
+  deleteGoal,
+  getAllGoals,
   getEntries,
-  reorderGoalNodes,
+  reorderGoals,
 } from '../lib/goalTreeApi';
 import {
   buildChildrenMap,
@@ -29,15 +29,14 @@ import {
   rollupTotal,
 } from '../lib/goalTree';
 import type { GoalsStackParamList } from '../navigation/GoalsStackNavigator';
-import type { GoalEntry, GoalNode } from '../types/goalNode';
+import type { GoalEntry, Goal } from '../types/goal';
 
 type Props = NativeStackScreenProps<GoalsStackParamList, 'GoalsList'>;
 
 /** Approximate goal card height (padding + title + meta + margin). */
 const LIST_CARD_HEIGHT = 72;
-const SWIPE_DELETE_WIDTH = 72;
 
-function descendantIds(rootId: string, nodes: GoalNode[]): string[] {
+function descendantIds(rootId: string, nodes: Goal[]): string[] {
   const childrenMap = buildChildrenMap(nodes);
   const ids: string[] = [];
   const seen = new Set<string>();
@@ -69,10 +68,10 @@ function deleteMessage(count: number): string {
 }
 
 function cardSubtitle(
-  node: GoalNode,
-  nodes: GoalNode[],
+  node: Goal,
+  nodes: Goal[],
   entries: GoalEntry[],
-  childrenMap: Map<string | null, GoalNode[]>,
+  childrenMap: Map<string | null, Goal[]>,
 ): string {
   if (isRepeating(node)) {
     const amount = node.targetAmount != null ? String(node.targetAmount) : '—';
@@ -98,7 +97,7 @@ function cardSubtitle(
 }
 
 export default function GoalsListScreen({ navigation }: Props) {
-  const [nodes, setNodes] = useState<GoalNode[]>([]);
+  const [nodes, setNodes] = useState<Goal[]>([]);
   const [entries, setEntries] = useState<GoalEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -107,11 +106,12 @@ export default function GoalsListScreen({ navigation }: Props) {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const scrollRef = useRef<ScrollView>(null);
 
   const load = useCallback(async () => {
     setLoadError(null);
     try {
-      const nextNodes = await getAllGoalNodes();
+      const nextNodes = await getAllGoals();
       const ids = nextNodes.map((node) => node.id);
       const nextEntries = ids.length > 0 ? await getEntries(ids) : [];
       setNodes(nextNodes);
@@ -157,7 +157,7 @@ export default function GoalsListScreen({ navigation }: Props) {
     setCreating(true);
     setCreateError(null);
     try {
-      const created = await createGoalNode({
+      const created = await createGoal({
         title: trimmed,
         parentId: null,
       });
@@ -190,13 +190,13 @@ export default function GoalsListScreen({ navigation }: Props) {
     setNodes((current) =>
       current.map((node) => byId.get(node.id) ?? node),
     );
-    void reorderGoalNodes(withOrder.map((node) => node.id)).catch((error) => {
+    void reorderGoals(withOrder.map((node) => node.id)).catch((error) => {
       console.warn('Failed to persist goal order', error);
       void load();
     });
   };
 
-  const confirmDelete = (node: GoalNode) => {
+  const confirmDelete = (node: Goal) => {
     const count = descendantIds(node.id, nodes).length;
     Alert.alert('Delete goal?', deleteMessage(count), [
       { text: 'Cancel', style: 'cancel' },
@@ -209,7 +209,7 @@ export default function GoalsListScreen({ navigation }: Props) {
           setEntries((current) =>
             current.filter((entry) => !removed.has(entry.goalId)),
           );
-          void deleteGoalNode(node.id).catch((error) => {
+          void deleteGoal(node.id).catch((error) => {
             console.warn('Failed to delete goal', error);
             void load();
           });
@@ -221,10 +221,13 @@ export default function GoalsListScreen({ navigation }: Props) {
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ScrollView
+        ref={scrollRef}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
-        scrollEnabled={draggingId == null}
+        // The gesture-handler scroll view otherwise cancels the long-press
+        // drag as soon as the finger moves.
+        disallowInterruption={false}
       >
         <View style={styles.headerRow}>
           <Text style={styles.sectionHeader}>Goals</Text>
@@ -267,37 +270,33 @@ export default function GoalsListScreen({ navigation }: Props) {
               key={node.id}
               style={draggingId === node.id ? styles.draggingWrap : undefined}
             >
-              <Swipeable
-                enabled={draggingId == null}
-                overshootRight={false}
-                renderRightActions={() => (
-                  <Pressable
-                    onPress={() => confirmDelete(node)}
-                    style={styles.swipeDeleteAction}
-                    accessibilityLabel="Delete goal"
-                  >
-                    <Ionicons name="trash" size={20} color="#fff" />
-                  </Pressable>
-                )}
+              <DraggableItem
+                index={index}
+                itemHeight={LIST_CARD_HEIGHT}
+                onPress={() =>
+                  navigation.navigate('StepDetail', { goalId: node.id })
+                }
+                onDragStart={() => {
+                  setDraggingId(node.id);
+                  scrollRef.current?.setNativeProps({ scrollEnabled: false });
+                  navigation.getParent()?.setOptions({ swipeEnabled: false });
+                }}
+                onDragMove={() => {}}
+                onDragEnd={(from, to) => {
+                  const clampedTo = Math.max(
+                    0,
+                    Math.min(listRef.current.length - 1, to),
+                  );
+                  reorderNodes(from, clampedTo);
+                  scrollRef.current?.setNativeProps({ scrollEnabled: true });
+                  navigation.getParent()?.setOptions({ swipeEnabled: true });
+                  setDraggingId(null);
+                }}
+                style={styles.dragHost}
+                onSwipeDelete={() => confirmDelete(node)}
+                deleteAccessibilityLabel="Delete goal"
               >
-                <DraggableItem
-                  index={index}
-                  itemHeight={LIST_CARD_HEIGHT}
-                  onPress={() =>
-                    navigation.navigate('StepDetail', { goalId: node.id })
-                  }
-                  onDragStart={() => setDraggingId(node.id)}
-                  onDragMove={() => {}}
-                  onDragEnd={(from, to) => {
-                    const clampedTo = Math.max(
-                      0,
-                      Math.min(listRef.current.length - 1, to),
-                    );
-                    reorderNodes(from, clampedTo);
-                    setDraggingId(null);
-                  }}
-                  style={styles.card}
-                >
+                <View style={styles.card}>
                   <View style={styles.titleRow}>
                     <Text style={styles.cardTitle} numberOfLines={1}>
                       {node.title || 'Untitled'}
@@ -314,8 +313,8 @@ export default function GoalsListScreen({ navigation }: Props) {
                   <Text style={styles.cardMeta}>
                     {cardSubtitle(node, nodes, entries, childrenMap)}
                   </Text>
-                </DraggableItem>
-              </Swipeable>
+                </View>
+              </DraggableItem>
             </View>
           ))
         )}
@@ -436,12 +435,14 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontSize: 14,
   },
+  dragHost: {
+    marginBottom: 8,
+  },
   card: {
     backgroundColor: '#fff',
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
-    marginBottom: 8,
     minHeight: 44,
     justifyContent: 'center',
     shadowColor: '#000',
@@ -454,14 +455,6 @@ const styles = StyleSheet.create({
     zIndex: 1000,
     elevation: 24,
     position: 'relative',
-  },
-  swipeDeleteAction: {
-    width: SWIPE_DELETE_WIDTH,
-    backgroundColor: '#ff3b30',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 12,
-    marginBottom: 8,
   },
   titleRow: {
     flexDirection: 'row',

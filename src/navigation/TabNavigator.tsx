@@ -4,9 +4,6 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Platform, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import DashboardScreen from '../screens/DashboardScreen';
-import GoalDetailScreen from '../screens/GoalDetailScreen';
-import HabitDetailScreen from '../screens/HabitDetailScreen';
-import MilestoneDetailScreen from '../screens/MilestoneDetailScreen';
 import StepDetailScreen from '../screens/StepDetailScreen';
 import TodayScreen from '../screens/TodayScreen';
 import GoalsStackNavigator, {
@@ -21,9 +18,14 @@ export type RootTabParamList = {
 
 export type { TodayStackParamList };
 
+export type DashboardStackParamList = {
+  DashboardMain: undefined;
+  StepDetail: { goalId: string };
+};
+
 const Tab = createMaterialTopTabNavigator<RootTabParamList>();
 const TodayStack = createNativeStackNavigator<TodayStackParamList>();
-const DashboardStack = createNativeStackNavigator();
+const DashboardStack = createNativeStackNavigator<DashboardStackParamList>();
 
 /** Keeps the same stack header chrome bottom tabs previously provided. */
 function TodayStackNavigator() {
@@ -33,21 +35,6 @@ function TodayStackNavigator() {
         name="TodayMain"
         component={TodayScreen}
         options={{ title: 'Today' }}
-      />
-      <TodayStack.Screen
-        name="HabitDetail"
-        component={HabitDetailScreen}
-        options={{ title: 'Habit' }}
-      />
-      <TodayStack.Screen
-        name="MilestoneDetail"
-        component={MilestoneDetailScreen}
-        options={{ title: 'Milestone' }}
-      />
-      <TodayStack.Screen
-        name="GoalDetail"
-        component={GoalDetailScreen}
-        options={{ title: 'Goal' }}
       />
       <TodayStack.Screen
         name="StepDetail"
@@ -65,6 +52,11 @@ function DashboardStackNavigator() {
         name="DashboardMain"
         component={DashboardScreen}
         options={{ title: 'Dashboard' }}
+      />
+      <DashboardStack.Screen
+        name="StepDetail"
+        component={StepDetailScreen}
+        options={{ title: 'Step' }}
       />
     </DashboardStack.Navigator>
   );

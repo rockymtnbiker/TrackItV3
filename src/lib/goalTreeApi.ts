@@ -1,26 +1,42 @@
 import type {
   GoalEntry,
-  GoalNode,
-  GoalNodeStatus,
+  Goal,
+  GoalStatus,
   RepeatPeriod,
-} from '../types/goalNode';
+} from '../types/goal';
 import { todayDateString } from '../utils/date';
-import {
-  ENTRIES_TABLE,
-  GOALS_TABLE,
-  amountToNumber,
-  type GoalsV2Row,
-} from './goalTables';
+import { ENTRIES_TABLE, GOALS_TABLE, amountToNumber } from './goalTables';
 import { isRepeating } from './goalTree';
 import { captureStatusDates } from './statusDates';
 import { supabase } from './supabase';
 
-export type GoalNodeInput = {
+type GoalRow = {
+  id: string;
+  user_id: string;
+  parent_id: string | null;
+  title: string;
+  description: string | null;
+  category: string | null;
+  sort_order: number | null;
+  status: string;
+  target_start_date: string | null;
+  target_end_date: string | null;
+  actual_start_date: string | null;
+  actual_end_date: string | null;
+  created_date: string | null;
+  deleted_at: string | null;
+  unit: string | null;
+  target_amount: number | string | null;
+  repeat_period: string | null;
+  planned_days: number[] | null;
+};
+
+export type GoalInput = {
   title: string;
   parentId?: string | null;
   description?: string | null;
   category?: string | null;
-  status?: GoalNodeStatus;
+  status?: GoalStatus;
   targetStartDate?: string | null;
   targetEndDate?: string | null;
   actualStartDate?: string | null;
@@ -31,8 +47,8 @@ export type GoalNodeInput = {
   plannedDays?: number[] | null;
 };
 
-export type GoalNodeUpdates = Partial<
-  Omit<GoalNodeInput, 'parentId' | 'title'>
+export type GoalUpdates = Partial<
+  Omit<GoalInput, 'parentId' | 'title'>
 > & {
   title?: string;
   sortOrder?: number;
@@ -70,8 +86,8 @@ function mapRepeatPeriod(
   return null;
 }
 
-function mapRowToNode(row: GoalsV2Row): GoalNode {
-  const status: GoalNodeStatus =
+function mapRowToNode(row: GoalRow): Goal {
+  const status: GoalStatus =
     row.status === 'pending' || row.status === 'active' || row.status === 'done'
       ? row.status
       : 'pending';
@@ -143,7 +159,7 @@ async function requireUserId(): Promise<string> {
 async function fetchNodeRow(
   id: string,
   userId: string,
-): Promise<GoalsV2Row | null> {
+): Promise<GoalRow | null> {
   const { data, error } = await supabase
     .from(GOALS_TABLE)
     .select('*')
@@ -156,10 +172,10 @@ async function fetchNodeRow(
     throw error;
   }
 
-  return (data as GoalsV2Row | null) ?? null;
+  return (data as GoalRow | null) ?? null;
 }
 
-export async function getAllGoalNodes(): Promise<GoalNode[]> {
+export async function getAllGoals(): Promise<Goal[]> {
   const userId = await requireUserId();
   const { data, error } = await supabase
     .from(GOALS_TABLE)
@@ -172,10 +188,10 @@ export async function getAllGoalNodes(): Promise<GoalNode[]> {
     throw error;
   }
 
-  return ((data as GoalsV2Row[] | null) ?? []).map(mapRowToNode);
+  return ((data as GoalRow[] | null) ?? []).map(mapRowToNode);
 }
 
-export async function getGoalNode(id: string): Promise<GoalNode | null> {
+export async function getGoal(id: string): Promise<Goal | null> {
   const userId = await requireUserId();
   const row = await fetchNodeRow(id, userId);
   return row ? mapRowToNode(row) : null;
@@ -183,7 +199,7 @@ export async function getGoalNode(id: string): Promise<GoalNode | null> {
 
 export async function getChildren(
   parentId: string | null,
-): Promise<GoalNode[]> {
+): Promise<Goal[]> {
   const userId = await requireUserId();
   let query = supabase
     .from(GOALS_TABLE)
@@ -202,10 +218,10 @@ export async function getChildren(
     throw error;
   }
 
-  return ((data as GoalsV2Row[] | null) ?? []).map(mapRowToNode);
+  return ((data as GoalRow[] | null) ?? []).map(mapRowToNode);
 }
 
-export async function createGoalNode(input: GoalNodeInput): Promise<GoalNode> {
+export async function createGoal(input: GoalInput): Promise<Goal> {
   const userId = await requireUserId();
   const parentId = input.parentId ?? null;
 
@@ -273,13 +289,13 @@ export async function createGoalNode(input: GoalNodeInput): Promise<GoalNode> {
     throw error;
   }
 
-  return mapRowToNode(data as GoalsV2Row);
+  return mapRowToNode(data as GoalRow);
 }
 
-export async function updateGoalNode(
+export async function updateGoal(
   id: string,
-  updates: GoalNodeUpdates,
-): Promise<GoalNode> {
+  updates: GoalUpdates,
+): Promise<Goal> {
   const userId = await requireUserId();
   const existing = await fetchNodeRow(id, userId);
   if (!existing) {
@@ -368,13 +384,13 @@ export async function updateGoalNode(
     throw error;
   }
 
-  return mapRowToNode(data as GoalsV2Row);
+  return mapRowToNode(data as GoalRow);
 }
 
-export async function setGoalNodeStatus(
+export async function setGoalStatus(
   id: string,
-  status: GoalNodeStatus,
-): Promise<GoalNode> {
+  status: GoalStatus,
+): Promise<Goal> {
   const userId = await requireUserId();
   const existing = await fetchNodeRow(id, userId);
   if (!existing) {
@@ -396,10 +412,10 @@ export async function setGoalNodeStatus(
     throw error;
   }
 
-  return mapRowToNode(data as GoalsV2Row);
+  return mapRowToNode(data as GoalRow);
 }
 
-export async function deleteGoalNode(id: string): Promise<void> {
+export async function deleteGoal(id: string): Promise<void> {
   const userId = await requireUserId();
   const { error } = await supabase
     .from(GOALS_TABLE)
@@ -412,7 +428,7 @@ export async function deleteGoalNode(id: string): Promise<void> {
   }
 }
 
-export async function reorderGoalNodes(orderedIds: string[]): Promise<void> {
+export async function reorderGoals(orderedIds: string[]): Promise<void> {
   const userId = await requireUserId();
 
   for (let index = 0; index < orderedIds.length; index += 1) {

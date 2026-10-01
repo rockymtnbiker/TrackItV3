@@ -21,15 +21,16 @@ import { KeyboardSafe } from '../components/KeyboardSafe';
 import { PendingStatusCircle } from '../components/PendingStatusCircle';
 import {
   deleteEntry,
-  getAllGoalNodes,
+  getAllGoals,
   getEntries,
-  setGoalNodeStatus,
+  setGoalStatus,
   upsertEntry,
 } from '../lib/goalTreeApi';
 import {
   buildChildrenMap,
   isLeaf,
   isPeriodTargetMet,
+  completionDates,
   isRepeating,
   isTracked,
   periodTotal,
@@ -37,7 +38,7 @@ import {
 } from '../lib/goalTree';
 import type { TodayStackParamList } from '../navigation/GoalsStackNavigator';
 import { nextGoalStatus } from '../types';
-import type { GoalEntry, GoalNode, GoalNodeStatus } from '../types/goalNode';
+import type { GoalEntry, Goal, GoalStatus } from '../types/goal';
 import {
   addDays,
   formatDate,
@@ -50,10 +51,7 @@ import {
   WEEKDAY_SHORT_LABELS,
   type WeekDayCell,
 } from '../utils/date';
-import { calculateStreak } from '../utils/streak';
-
-/** Extra days before the visible week so streak badges stay accurate. */
-const COMPLETION_LOOKBACK_DAYS = 90;
+import { calculateStreak, STREAK_LOOKBACK_DAYS } from '../utils/streak';
 
 const WEEKDAY_INDEX = {
   sunday: 0,
@@ -103,15 +101,6 @@ function dayValue(entries: GoalEntry[], goalId: string, date: string): number {
   return entry?.value ?? 0;
 }
 
-function completionDates(node: GoalNode, entries: GoalEntry[]): string[] {
-  return entries
-    .filter((entry) => entry.goalId === node.id)
-    .filter((entry) =>
-      isTracked(node) ? (entry.value ?? 0) > 0 : true,
-    )
-    .map((entry) => entry.entryDate);
-}
-
 function withUpsertedEntry(
   entries: GoalEntry[],
   goalId: string,
@@ -153,11 +142,11 @@ function progressRatio(total: number, target: number | null): number {
 }
 
 function topLevelAncestor(
-  node: GoalNode,
-  byId: Map<string, GoalNode>,
-): GoalNode | null {
-  let current: GoalNode | undefined = node;
-  let top: GoalNode | null = null;
+  node: Goal,
+  byId: Map<string, Goal>,
+): Goal | null {
+  let current: Goal | undefined = node;
+  let top: Goal | null = null;
   const seen = new Set<string>();
   while (current && !seen.has(current.id)) {
     seen.add(current.id);
@@ -168,8 +157,8 @@ function topLevelAncestor(
 }
 
 function contextTitle(
-  node: GoalNode,
-  byId: Map<string, GoalNode>,
+  node: Goal,
+  byId: Map<string, Goal>,
 ): string | undefined {
   if (node.parentId == null) {
     return undefined;
@@ -186,21 +175,21 @@ function contextTitle(
 }
 
 /** Repeating steps stay on Today until they are marked done. Planned days only affect order. */
-function listedAsRepeating(node: GoalNode): boolean {
+function listedAsRepeating(node: Goal): boolean {
   return (
     (isRepeating(node) || node.repeatPeriod != null) && node.status !== 'done'
   );
 }
 
-function isInProgressStatus(node: GoalNode, today: string): boolean {
+function isInProgressStatus(node: Goal, today: string): boolean {
   return node.status === 'active' || node.actualEndDate === today;
 }
 
 /** True when a descendant is already the Today row for this branch. */
 function workLivesOnDescendant(
-  node: GoalNode,
+  node: Goal,
   today: string,
-  childrenMap: Map<string | null, GoalNode[]>,
+  childrenMap: Map<string | null, Goal[]>,
 ): boolean {
   const stack = [...(childrenMap.get(node.id) ?? [])];
   const seen = new Set<string>();
@@ -226,9 +215,9 @@ function workLivesOnDescendant(
 }
 
 function showsInProgress(
-  node: GoalNode,
+  node: Goal,
   today: string,
-  childrenMap: Map<string | null, GoalNode[]>,
+  childrenMap: Map<string | null, Goal[]>,
 ): boolean {
   if (
     isRepeating(node) ||
@@ -583,10 +572,12 @@ function ChecklistRow({
   item,
   onToggle,
   onOpen,
+  onLog,
 }: {
   item: RepeatingRow;
   onToggle: () => void;
   onOpen: () => void;
+  onLog?: () => void;
 }) {
   const iconName = item.isComplete ? 'radio-button-on' : 'radio-button-off';
   const iconColor = item.isComplete ? '#34c759' : '#c7c7cc';
@@ -681,6 +672,19 @@ function ChecklistRow({
           </View>
         ) : null}
       </View>
+      {onLog ? (
+        <Pressable
+          onPress={onLog}
+          hitSlop={6}
+          style={({ pressed }) => [
+            styles.logAddButton,
+            pressed && styles.pressed,
+          ]}
+          accessibilityLabel="Log an amount"
+        >
+          <Ionicons name="add" size={22} color="#007aff" />
+        </Pressable>
+      ) : null}
     </Pressable>
   );
 }
@@ -693,7 +697,7 @@ function InProgressRow({
   onToggleStatus,
   onLog,
 }: {
-  step: GoalNode;
+  step: Goal;
   context?: string;
   progressLabel?: string;
   onOpen: () => void;
@@ -800,7 +804,7 @@ export default function TodayScreen() {
   const [pageIndex, setPageIndex] = useState(INITIAL_SIDE_WEEKS);
   const listRef = useRef<FlatList<string> | null>(null);
 
-  const [nodes, setNodes] = useState<GoalNode[]>([]);
+  const [nodes, setNodes] = useState<Goal[]>([]);
   const [entries, setEntries] = useState<GoalEntry[]>([]);
   const [headerTitle, setHeaderTitle] = useState('Set a Goal to get started');
   const [loading, setLoading] = useState(true);
@@ -817,7 +821,7 @@ export default function TodayScreen() {
   entriesRef.current = entries;
 
   const loadEntryLogs = useCallback(
-    async (nodeList: GoalNode[], weekStart: string) => {
+    async (nodeList: Goal[], weekStart: string) => {
       const ids = nodeList
         .filter((node) => isRepeating(node) || isTracked(node))
         .map((node) => node.id);
@@ -826,7 +830,7 @@ export default function TodayScreen() {
       }
       return getEntries(
         ids,
-        addDays(weekStart, -COMPLETION_LOOKBACK_DAYS),
+        addDays(weekStart, -STREAK_LOOKBACK_DAYS),
         addDays(weekStart, 6),
       );
     },
@@ -837,7 +841,7 @@ export default function TodayScreen() {
     async (weekStart: string) => {
       setLoadError(null);
       try {
-        const nextNodes = await getAllGoalNodes();
+        const nextNodes = await getAllGoals();
         const topLevel = nextNodes
           .filter((node) => node.parentId == null && node.status !== 'done')
           .sort((a, b) => a.sortOrder - b.sortOrder);
@@ -895,7 +899,7 @@ export default function TodayScreen() {
     return nodes
       .filter((node) => listedAsRepeating(node))
       .sort((a, b) => {
-        const rank = (node: GoalNode) => {
+        const rank = (node: Goal) => {
           if (isPeriodTargetMet(node, entries, selectedDate)) {
             return 2;
           }
@@ -961,10 +965,10 @@ export default function TodayScreen() {
   };
 
   const applyStatus = (
-    node: GoalNode,
-    next: GoalNodeStatus,
+    node: Goal,
+    next: GoalStatus,
     todayStr: string,
-  ): GoalNode => {
+  ): Goal => {
     if (next === 'done') {
       return { ...node, status: next, actualEndDate: todayStr };
     }
@@ -979,7 +983,7 @@ export default function TodayScreen() {
     return { ...node, status: next };
   };
 
-  const handleStatusCycle = (step: GoalNode) => {
+  const handleStatusCycle = (step: Goal) => {
     const next = nextGoalStatus(step.status);
     const todayStr = todayDateString();
     const previous = nodes.find((node) => node.id === step.id) ?? step;
@@ -990,7 +994,7 @@ export default function TodayScreen() {
       ),
     );
 
-    void setGoalNodeStatus(step.id, next)
+    void setGoalStatus(step.id, next)
       .then((updated) => {
         setNodes((current) =>
           current.map((node) => {
@@ -1265,10 +1269,9 @@ export default function TodayScreen() {
                 item={row}
                 onToggle={() => handleToggle(row)}
                 onOpen={() =>
-                  row.tracked
-                    ? openLog(row.id)
-                    : navigation.navigate('StepDetail', { goalId: row.id })
+                  navigation.navigate('StepDetail', { goalId: row.id })
                 }
+                onLog={row.tracked ? () => openLog(row.id) : undefined}
               />
             ))}
           </View>

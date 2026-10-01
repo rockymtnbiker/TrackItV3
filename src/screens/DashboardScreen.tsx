@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -11,33 +12,29 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../context/AuthContext';
-import { getGoals } from '../lib/goalsApi';
 import {
-  getAllActiveHabits,
-  getCompletionsInRange,
-  getStreakCount,
-  type ActiveHabit,
-} from '../lib/habitsApi';
-import { getMilestones } from '../lib/milestonesApi';
-import type { Goal, Milestone } from '../types';
-import {
-  completionsInActiveRange,
-  dashboardTrackableHabits,
-  existsByDate,
-  filterActive,
-} from '../utils/activeItems';
+  buildChildrenMap,
+  completionDates,
+  isRepeating,
+  isTracked,
+  paceInfo,
+  periodTotal,
+  rollupTotal,
+} from '../lib/goalTree';
+import { getAllGoals, getEntries } from '../lib/goalTreeApi';
+import type { DashboardStackParamList } from '../navigation/TabNavigator';
+import type { GoalEntry, Goal } from '../types/goal';
 import {
   addDays,
+  formatDateMDY,
   getWeekStart,
+  parseDateString,
+  toDateString,
   todayDateString,
 } from '../utils/date';
-import {
-  goalProgressPercent,
-  monthlyProgressLabel,
-  monthlyProgressPercent,
-  weeklyProgressLabel,
-  weeklyProgressPercent,
-} from '../utils/progress';
+import { calculateStreak, STREAK_LOOKBACK_DAYS } from '../utils/streak';
+
+type Props = NativeStackScreenProps<DashboardStackParamList, 'DashboardMain'>;
 
 function ProgressBar({ percent }: { percent: number }) {
   return (
@@ -47,133 +44,173 @@ function ProgressBar({ percent }: { percent: number }) {
   );
 }
 
-type TrackableItem = {
-  id: string;
-  title: string;
-  completionLog: string[];
-  weeklyTarget: number;
-  isArchived: boolean;
-};
-
-type HabitStreakItem = {
-  id: string;
-  title: string;
-  streak: number;
-};
-
-function ProgressRow({
-  item,
-  percent,
-  label,
-}: {
-  item: TrackableItem;
-  percent: number;
-  label: string;
-}) {
-  return (
-    <View style={styles.progressRow}>
-      <View style={styles.progressRowHeader}>
-        <Text style={styles.progressRowTitle}>
-          {item.title}
-          {item.isArchived ? (
-            <Text style={styles.archivedLabel}> (archived)</Text>
-          ) : null}
-        </Text>
-        <Text style={styles.progressRowPercent}>{percent}%</Text>
-      </View>
-      <Text style={styles.progressRowLabel}>{label}</Text>
-      <ProgressBar percent={percent} />
-    </View>
-  );
+function formatAmount(value: number): string {
+  if (Number.isInteger(value)) {
+    return String(value);
+  }
+  return String(Math.round(value * 100) / 100);
 }
 
-/** Flame badge shown once a habit reaches a 14-day streak. */
-function StreakBadge({ streak }: { streak: number }) {
-  if (streak < 14) {
-    return null;
+function barPercent(total: number, target: number | null): number {
+  if (target == null || target <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, (total / target) * 100));
+}
+
+function monthEnd(date: string): string {
+  const parsed = parseDateString(date);
+  const lastDay = new Date(parsed.getFullYear(), parsed.getMonth() + 1, 0).getDate();
+  return toDateString(parsed.getFullYear(), parsed.getMonth(), lastDay);
+}
+
+function subtreeIds(rootId: string, nodes: Goal[]): string[] {
+  const childrenMap = buildChildrenMap(nodes);
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  const stack = [rootId];
+
+  while (stack.length > 0) {
+    const id = stack.pop();
+    if (id == null || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    ids.push(id);
+    for (const child of childrenMap.get(id) ?? []) {
+      stack.push(child.id);
+    }
+  }
+
+  return ids;
+}
+
+function ActiveGoalCard({
+  node,
+  nodes,
+  entries,
+  today,
+  childrenMap,
+  onPress,
+}: {
+  node: Goal;
+  nodes: Goal[];
+  entries: GoalEntry[];
+  today: string;
+  childrenMap: Map<string | null, Goal[]>;
+  onPress: () => void;
+}) {
+  const repeating = isRepeating(node);
+  const tracked = isTracked(node);
+  const children = childrenMap.get(node.id) ?? [];
+
+  let label: string | null = null;
+  let percent = 0;
+  let showBar = false;
+  let paceLine: string | null = null;
+  let paceBehind = false;
+  let streak: number | null = null;
+  let statusLabel: string | null = null;
+
+  if (tracked && !repeating) {
+    const total = rollupTotal(node, nodes, entries) ?? 0;
+    const target =
+      node.targetAmount != null ? formatAmount(node.targetAmount) : '—';
+    label = `${formatAmount(total)} / ${target} ${node.unit}`;
+    percent = barPercent(total, node.targetAmount);
+    showBar = true;
+    const pace = paceInfo(node, total, today);
+    if (pace) {
+      paceBehind = pace.delta < 0 && !pace.onPace;
+      paceLine = `${Math.round(pace.pctDone)}% done · ${Math.round(Math.abs(pace.delta))}% ${paceBehind ? 'behind' : 'ahead'}`;
+    }
+  } else if (repeating) {
+    const total = periodTotal(node, entries, today);
+    const target =
+      node.targetAmount != null ? formatAmount(node.targetAmount) : '—';
+    const unit = node.unit ?? 'times';
+    const period = node.repeatPeriod === 'month' ? 'this month' : 'this week';
+    label = `${formatAmount(total)} / ${target} ${unit} ${period}`;
+    percent = barPercent(total, node.targetAmount);
+    showBar = true;
+    streak = calculateStreak(completionDates(node, entries), today);
+  } else if (children.length > 0) {
+    const doneCount = children.filter((child) => child.status === 'done').length;
+    const activeCount = children.filter((child) => child.status === 'active').length;
+    label = `${doneCount} done · ${activeCount} active`;
+  } else {
+    statusLabel = node.status;
   }
 
   return (
-    <View style={styles.streakBadge}>
-      <Ionicons name="flame" size={12} color="#ff6b00" />
-      <Text style={styles.streakBadgeText}>{streak}</Text>
-    </View>
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.goalRow, pressed && styles.pressed]}
+      accessibilityRole="button"
+      accessibilityLabel={`Open ${node.title}`}
+    >
+      <View style={styles.goalHeader}>
+        <Text style={styles.goalTitle}>{node.title}</Text>
+        {streak != null ? (
+          <View style={styles.streakMeta}>
+            <Ionicons name="flame" size={16} color="#ff6b00" />
+            <Text style={styles.streakCount}>{streak}</Text>
+          </View>
+        ) : null}
+      </View>
+      {label ? <Text style={styles.progressRowLabel}>{label}</Text> : null}
+      {showBar ? <ProgressBar percent={percent} /> : null}
+      {paceLine ? (
+        <Text style={[styles.paceLine, paceBehind ? styles.paceBehind : styles.paceAhead]}>
+          {paceLine}
+        </Text>
+      ) : null}
+      {statusLabel ? <Text style={styles.statusLabel}>{statusLabel}</Text> : null}
+    </Pressable>
   );
 }
 
-function monthBounds(referenceDate: string): { start: string; end: string } {
-  const [year, month] = referenceDate.split('-').map(Number);
-  const start = `${year}-${String(month).padStart(2, '0')}-01`;
-  const lastDay = new Date(year, month, 0).getDate();
-  const end = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
-  return { start, end };
-}
-
-export default function DashboardScreen() {
+export default function DashboardScreen({ navigation }: Props) {
   const { signOut } = useAuth();
   const [signingOut, setSigningOut] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [goals, setGoals] = useState<Goal[]>([]);
-  const [milestones, setMilestones] = useState<Milestone[]>([]);
-  const [habits, setHabits] = useState<ActiveHabit[]>([]);
-  const [streaks, setStreaks] = useState<HabitStreakItem[]>([]);
-  const today = todayDateString();
+  const [nodes, setNodes] = useState<Goal[]>([]);
+  const [entries, setEntries] = useState<GoalEntry[]>([]);
+  const [completedOpen, setCompletedOpen] = useState(false);
 
   const loadDashboard = useCallback(async () => {
-    setLoading(true);
     setLoadError(null);
     try {
-      const [nextGoals, nextMilestones, nextHabits] = await Promise.all([
-        getGoals(),
-        getMilestones(),
-        getAllActiveHabits(),
+      const today = todayDateString();
+      const nextNodes = await getAllGoals();
+      const topLevel = nextNodes.filter((node) => node.parentId == null);
+      const active = topLevel.filter((node) => node.status !== 'done');
+
+      const cumulativeIds = new Set<string>();
+      const repeatingIds: string[] = [];
+      for (const node of active) {
+        if (isRepeating(node)) {
+          repeatingIds.push(node.id);
+        } else if (isTracked(node)) {
+          for (const id of subtreeIds(node.id, nextNodes)) {
+            cumulativeIds.add(id);
+          }
+        }
+      }
+
+      const weekEnd = addDays(getWeekStart(today), 6);
+      const periodEnd = weekEnd > monthEnd(today) ? weekEnd : monthEnd(today);
+      const from = addDays(today, -STREAK_LOOKBACK_DAYS);
+      const [cumulativeEntries, repeatingEntries] = await Promise.all([
+        cumulativeIds.size > 0 ? getEntries([...cumulativeIds]) : Promise.resolve([]),
+        repeatingIds.length > 0
+          ? getEntries(repeatingIds, from, periodEnd)
+          : Promise.resolve([]),
       ]);
 
-      const weekStart = getWeekStart(today);
-      const weekEnd = addDays(weekStart, 6);
-      const { start: monthStart, end: monthEnd } = monthBounds(today);
-      const rangeStart = monthStart < weekStart ? monthStart : weekStart;
-      const rangeEnd = monthEnd > weekEnd ? monthEnd : weekEnd;
-
-      const [completionsByHabit, streakCounts] = await Promise.all([
-        Promise.all(
-          nextHabits.map(async (habit) => {
-            const dates = await getCompletionsInRange(
-              habit.id,
-              rangeStart,
-              rangeEnd,
-            );
-            return [habit.id, dates] as const;
-          }),
-        ),
-        Promise.all(
-          nextHabits.map(async (habit) => {
-            const streak = await getStreakCount(habit.id);
-            return [habit.id, streak] as const;
-          }),
-        ),
-      ]);
-
-      const completionMap = new Map(completionsByHabit);
-      const streakMap = new Map(streakCounts);
-
-      setGoals(nextGoals);
-      setMilestones(nextMilestones);
-      setHabits(
-        nextHabits.map((habit) => ({
-          ...habit,
-          completionLog: completionMap.get(habit.id) ?? [],
-          streakCount: streakMap.get(habit.id) ?? 0,
-        })),
-      );
-      setStreaks(
-        nextHabits.map((habit) => ({
-          id: habit.id,
-          title: habit.title,
-          streak: streakMap.get(habit.id) ?? 0,
-        })),
-      );
+      setNodes(nextNodes);
+      setEntries([...cumulativeEntries, ...repeatingEntries]);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Failed to load dashboard.';
@@ -181,7 +218,7 @@ export default function DashboardScreen() {
     } finally {
       setLoading(false);
     }
-  }, [today]);
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -198,43 +235,28 @@ export default function DashboardScreen() {
     setSigningOut(false);
   };
 
+  const today = todayDateString();
+  const childrenMap = useMemo(() => buildChildrenMap(nodes), [nodes]);
   const activeGoals = useMemo(
     () =>
-      filterActive(goals).filter(
-        (item) => existsByDate(item, today) && item.status !== 'done',
-      ),
-    [goals, today],
+      nodes
+        .filter((node) => node.parentId == null && node.status !== 'done')
+        .sort((a, b) => a.sortOrder - b.sortOrder),
+    [nodes],
   );
   const doneGoals = useMemo(
     () =>
-      filterActive(goals).filter(
-        (item) => existsByDate(item, today) && item.status === 'done',
-      ),
-    [goals, today],
-  );
-  const activeMilestones = useMemo(
-    () => filterActive(milestones).filter((item) => existsByDate(item, today)),
-    [milestones, today],
+      nodes
+        .filter((node) => node.parentId == null && node.status === 'done')
+        .sort((a, b) => a.sortOrder - b.sortOrder),
+    [nodes],
   );
 
-  const trackableItems = useMemo<TrackableItem[]>(
-    () =>
-      dashboardTrackableHabits(habits, today).map((habit) => ({
-        id: habit.id,
-        title: habit.title,
-        completionLog: completionsInActiveRange(
-          habit.completionLog,
-          habit.createdDate,
-          habit.startDate,
-          habit.endDate,
-        ),
-        weeklyTarget: habit.weeklyTarget,
-        isArchived: Boolean(habit.deletedAt),
-      })),
-    [habits, today],
-  );
+  const openGoal = (goalId: string) => {
+    navigation.navigate('StepDetail', { goalId });
+  };
 
-  if (loading && goals.length === 0 && habits.length === 0) {
+  if (loading && nodes.length === 0) {
     return (
       <SafeAreaView style={styles.safeArea} edges={['top']}>
         <View style={styles.loadingState}>
@@ -244,17 +266,14 @@ export default function DashboardScreen() {
     );
   }
 
-  if (loadError && goals.length === 0 && habits.length === 0) {
+  if (loadError && nodes.length === 0) {
     return (
       <SafeAreaView style={styles.safeArea} edges={['top']}>
         <View style={styles.loadingState}>
           <Text style={styles.errorText}>{loadError}</Text>
           <Pressable
             onPress={() => void loadDashboard()}
-            style={({ pressed }) => [
-              styles.retryButton,
-              pressed && styles.pressed,
-            ]}
+            style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
           >
             <Text style={styles.retryButtonText}>Retry</Text>
           </Pressable>
@@ -272,10 +291,7 @@ export default function DashboardScreen() {
             onPress={handleSignOut}
             disabled={signingOut}
             hitSlop={8}
-            style={({ pressed }) => [
-              styles.logoutButton,
-              pressed && styles.pressed,
-            ]}
+            style={({ pressed }) => [styles.logoutButton, pressed && styles.pressed]}
             accessibilityLabel="Log out"
           >
             {signingOut ? (
@@ -286,132 +302,67 @@ export default function DashboardScreen() {
           </Pressable>
         </View>
 
-        <Text style={styles.sectionTitle}>Goals</Text>
+        <Text style={styles.sectionTitle}>Active</Text>
         <View style={styles.sectionCard}>
           {activeGoals.length > 0 ? (
-            activeGoals.map((goal, index) => {
-              const progress = goalProgressPercent(goal.id, activeMilestones);
+            activeGoals.map((goal, index) => (
+              <View
+                key={goal.id}
+                style={index < activeGoals.length - 1 ? styles.rowBorder : undefined}
+              >
+                <ActiveGoalCard
+                  node={goal}
+                  nodes={nodes}
+                  entries={entries}
+                  today={today}
+                  childrenMap={childrenMap}
+                  onPress={() => openGoal(goal.id)}
+                />
+              </View>
+            ))
+          ) : (
+            <Text style={styles.emptyText}>No active goals.</Text>
+          )}
+        </View>
 
-              return (
+        <Pressable
+          onPress={() => setCompletedOpen((open) => !open)}
+          style={({ pressed }) => [styles.completedHeader, pressed && styles.pressed]}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: completedOpen }}
+          accessibilityLabel={`Completed, ${doneGoals.length}`}
+        >
+          <Text style={[styles.sectionTitle, styles.completedTitle]}>
+            Completed ({doneGoals.length})
+          </Text>
+          <Ionicons
+            name={completedOpen ? 'chevron-down' : 'chevron-forward'}
+            size={16}
+            color="#888"
+          />
+        </Pressable>
+        {completedOpen ? (
+          <View style={styles.sectionCard}>
+            {doneGoals.length > 0 ? (
+              doneGoals.map((goal, index) => (
                 <View
                   key={goal.id}
                   style={[
-                    styles.goalRow,
-                    index < activeGoals.length - 1 && styles.rowBorder,
+                    styles.completedRow,
+                    index < doneGoals.length - 1 && styles.rowBorder,
                   ]}
                 >
-                  <View style={styles.goalHeader}>
-                    <Text style={styles.goalTitle}>{goal.title}</Text>
-                    <Text style={styles.goalPercent}>{progress}%</Text>
-                  </View>
-                  <ProgressBar percent={progress} />
-                </View>
-              );
-            })
-          ) : (
-            <Text style={styles.emptyText}>No goals yet.</Text>
-          )}
-        </View>
-
-        <Text style={styles.sectionTitle}>Done Goals</Text>
-        <View style={styles.sectionCard}>
-          {doneGoals.length > 0 ? (
-            doneGoals.map((goal, index) => (
-              <View
-                key={goal.id}
-                style={[
-                  styles.goalRow,
-                  index < doneGoals.length - 1 && styles.rowBorder,
-                ]}
-              >
-                <Text style={[styles.goalTitle, styles.doneTitle]}>
-                  {goal.title}
-                </Text>
-              </View>
-            ))
-          ) : (
-            <Text style={styles.emptyText}>No done goals yet.</Text>
-          )}
-        </View>
-
-        <Text style={styles.sectionTitle}>Habit Streaks</Text>
-        <View style={styles.sectionCard}>
-          {streaks.length > 0 ? (
-            streaks.map((item, index) => (
-              <View
-                key={item.id}
-                style={[
-                  styles.streakRow,
-                  index < streaks.length - 1 && styles.rowBorder,
-                ]}
-              >
-                <Text style={styles.streakTitle}>
-                  {item.title || 'Untitled habit'}
-                </Text>
-                <View style={styles.streakMeta}>
-                  <StreakBadge streak={item.streak} />
-                  <Text style={styles.streakCount}>
-                    {item.streak} day{item.streak === 1 ? '' : 's'}
+                  <Text style={[styles.goalTitle, styles.doneTitle]}>{goal.title}</Text>
+                  <Text style={styles.completedDate}>
+                    {goal.actualEndDate ? formatDateMDY(goal.actualEndDate) : '—'}
                   </Text>
                 </View>
-              </View>
-            ))
-          ) : (
-            <Text style={styles.emptyText}>No habits yet.</Text>
-          )}
-        </View>
-
-        <Text style={styles.sectionTitle}>Weekly Progress</Text>
-        <View style={styles.sectionCard}>
-          {trackableItems.length > 0 ? (
-            trackableItems.map((item, index) => (
-              <View
-                key={`weekly-${item.id}`}
-                style={index < trackableItems.length - 1 && styles.rowBorder}
-              >
-                <ProgressRow
-                  item={item}
-                  percent={weeklyProgressPercent(
-                    item.completionLog,
-                    item.weeklyTarget,
-                  )}
-                  label={weeklyProgressLabel(
-                    item.completionLog,
-                    item.weeklyTarget,
-                  )}
-                />
-              </View>
-            ))
-          ) : (
-            <Text style={styles.emptyText}>No habits yet.</Text>
-          )}
-        </View>
-
-        <Text style={styles.sectionTitle}>Monthly Progress</Text>
-        <View style={styles.sectionCard}>
-          {trackableItems.length > 0 ? (
-            trackableItems.map((item, index) => (
-              <View
-                key={`monthly-${item.id}`}
-                style={index < trackableItems.length - 1 && styles.rowBorder}
-              >
-                <ProgressRow
-                  item={item}
-                  percent={monthlyProgressPercent(
-                    item.completionLog,
-                    item.weeklyTarget,
-                  )}
-                  label={monthlyProgressLabel(
-                    item.completionLog,
-                    item.weeklyTarget,
-                  )}
-                />
-              </View>
-            ))
-          ) : (
-            <Text style={styles.emptyText}>No habits yet.</Text>
-          )}
-        </View>
+              ))
+            ) : (
+              <Text style={styles.emptyText}>No completed goals.</Text>
+            )}
+          </View>
+        ) : null}
       </ScrollView>
     </SafeAreaView>
   );
@@ -481,6 +432,16 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     marginBottom: 4,
   },
+  completedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  completedTitle: {
+    flex: 1,
+    marginBottom: 0,
+  },
   sectionCard: {
     backgroundColor: '#fff',
     borderRadius: 12,
@@ -518,11 +479,6 @@ const styles = StyleSheet.create({
     textDecorationLine: 'line-through',
     fontWeight: '600',
   },
-  goalPercent: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#007aff',
-  },
   progressTrack: {
     height: 10,
     borderRadius: 5,
@@ -534,76 +490,48 @@ const styles = StyleSheet.create({
     backgroundColor: '#007aff',
     borderRadius: 5,
   },
-  progressRow: {
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-  progressRowHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 2,
-  },
-  progressRowTitle: {
-    flex: 1,
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#111',
-    marginRight: 12,
-  },
-  archivedLabel: {
-    fontSize: 13,
-    fontWeight: '400',
-    color: '#888',
-  },
-  progressRowPercent: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#007aff',
-  },
   progressRowLabel: {
     fontSize: 12,
     color: '#888',
     marginBottom: 6,
   },
-  streakRow: {
+  paceLine: {
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 6,
+  },
+  paceAhead: {
+    color: '#248a3d',
+  },
+  paceBehind: {
+    color: '#b8860b',
+  },
+  statusLabel: {
+    fontSize: 13,
+    color: '#888',
+    textTransform: 'capitalize',
+  },
+  streakMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  streakCount: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#ff6b00',
+  },
+  completedRow: {
     paddingHorizontal: 14,
     paddingVertical: 12,
-    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
   },
-  streakTitle: {
-    flex: 1,
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#111',
-  },
-  streakMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  streakCount: {
+  completedDate: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#007aff',
-  },
-  streakBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    backgroundColor: '#fff4e8',
-    borderRadius: 999,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  streakBadgeText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#ff6b00',
+    color: '#888',
   },
   emptyText: {
     padding: 14,

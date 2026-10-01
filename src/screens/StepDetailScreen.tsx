@@ -27,24 +27,41 @@ import { KeyboardSafe } from '../components/KeyboardSafe';
 import { PendingStatusCircle } from '../components/PendingStatusCircle';
 import { UNIT_OPTIONS } from '../constants';
 import {
-  createGoalNode,
-  deleteGoalNode,
-  getAllGoalNodes,
+  createGoal,
+  deleteGoal,
+  getAllGoals,
   getEntries,
-  reorderGoalNodes,
-  setGoalNodeStatus,
-  updateGoalNode,
+  reorderGoals,
+  setGoalStatus,
+  updateGoal,
 } from '../lib/goalTreeApi';
-import { buildChildrenMap, rollupTotal } from '../lib/goalTree';
+import {
+  buildChildrenMap,
+  paceInfo,
+  periodTotal,
+  rollupTotal,
+} from '../lib/goalTree';
+import {
+  dailyAmounts,
+  monthlyPlanned,
+  planSources,
+  weeklyTarget,
+} from '../lib/metrics';
 import type { GoalsStackParamList } from '../navigation/GoalsStackNavigator';
 import type {
   GoalEntry,
-  GoalNode,
-  GoalNodeStatus,
+  Goal,
+  GoalStatus,
   RepeatPeriod,
-} from '../types/goalNode';
+} from '../types/goal';
 import { nextGoalStatus } from '../types';
-import { formatDateMDY } from '../utils/date';
+import {
+  addDays,
+  formatDateMDY,
+  getWeekStart,
+  parseDateString,
+  todayDateString,
+} from '../utils/date';
 
 type Props = NativeStackScreenProps<GoalsStackParamList, 'StepDetail'>;
 
@@ -87,7 +104,7 @@ function periodWord(period: RepeatPeriod | null): string {
   return period === 'month' ? 'month' : 'week';
 }
 
-function subtreeIds(rootId: string, nodes: GoalNode[]): string[] {
+function subtreeIds(rootId: string, nodes: Goal[]): string[] {
   const childrenMap = buildChildrenMap(nodes);
   const ids: string[] = [];
   const seen = new Set<string>();
@@ -108,8 +125,275 @@ function subtreeIds(rootId: string, nodes: GoalNode[]): string[] {
   return ids;
 }
 
-function descendantCount(rootId: string, nodes: GoalNode[]): number {
+function descendantCount(rootId: string, nodes: Goal[]): number {
   return Math.max(0, subtreeIds(rootId, nodes).length - 1);
+}
+
+function metricStartDate(node: Goal): string {
+  return (node.actualStartDate ?? node.createdDate).slice(0, 10);
+}
+
+function formatMetricAmount(value: number): string {
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+function daysFrom(start: string, end: string): number {
+  const ms =
+    parseDateString(end.slice(0, 10)).getTime() -
+    parseDateString(start.slice(0, 10)).getTime();
+  return Math.round(ms / 86_400_000);
+}
+
+const WEEK_WINDOW = 6;
+
+function visibleWeekStarts(
+  bottom: string,
+  startWeek: string,
+  currentWeek: string,
+): string[] {
+  const weeks: string[] = [];
+  for (let index = WEEK_WINDOW - 1; index >= 0; index -= 1) {
+    const start = addDays(bottom, -7 * index);
+    if (start >= startWeek && start <= currentWeek) {
+      weeks.push(start);
+    }
+  }
+  return weeks;
+}
+
+function weekAmount(
+  weekStart: string,
+  amounts: Map<string, number>,
+  startDate: string,
+  today: string,
+): number {
+  let total = 0;
+  for (let index = 0; index < 7; index += 1) {
+    const date = addDays(weekStart, index);
+    if (date < startDate || date > today) {
+      continue;
+    }
+    total += amounts.get(date) ?? 0;
+  }
+  return total;
+}
+
+function MetricsSections({
+  node,
+  nodes,
+  entries,
+}: {
+  node: Goal;
+  nodes: Goal[];
+  entries: GoalEntry[];
+}) {
+  const [weekOffset, setWeekOffset] = useState(0);
+  const sources = planSources(node, nodes);
+
+  useEffect(() => {
+    setWeekOffset(0);
+  }, [node.id]);
+
+  if (node.unit == null || sources.length === 0) {
+    return null;
+  }
+
+  const today = todayDateString();
+  const startDate = metricStartDate(node);
+  const currentWeek = getWeekStart(today);
+  const startWeek = getWeekStart(startDate);
+  const historyWeeks =
+    startWeek <= currentWeek
+      ? Math.round(daysFrom(startWeek, currentWeek) / 7) + 1
+      : 0;
+  const maxOffset = Math.max(0, historyWeeks - WEEK_WINDOW);
+  if (weekOffset > maxOffset) {
+    setWeekOffset(maxOffset);
+  }
+  const offset = Math.min(weekOffset, maxOffset);
+  const bottom = addDays(currentWeek, -7 * offset);
+  const weeks =
+    historyWeeks > 0 ? visibleWeekStarts(bottom, startWeek, currentWeek) : [];
+  const canGoBack = offset < maxOffset;
+  const canGoForward = offset > 0;
+
+  const month = parseDateString(today);
+  const monthStart = `${today.slice(0, 7)}-01`;
+  const monthEndDate = new Date(month.getFullYear(), month.getMonth() + 1, 0);
+  const monthEnd = `${today.slice(0, 7)}-${String(monthEndDate.getDate()).padStart(2, '0')}`;
+  const monthFrom = startDate > monthStart ? startDate : monthStart;
+  const monthAmounts = dailyAmounts(node, nodes, entries, monthFrom, monthEnd);
+  let completed = 0;
+  for (const value of monthAmounts.values()) {
+    completed += value;
+  }
+  const planned = monthlyPlanned(sources, today, startDate);
+  const monthPct = planned > 0 ? Math.round((completed / planned) * 100) : null;
+  const monthName = month.toLocaleDateString(undefined, { month: 'long' });
+
+  const windowFrom = weeks[0] ?? today;
+  const windowTo = weeks.length > 0 ? addDays(weeks[weeks.length - 1], 6) : today;
+  const weekAmounts = dailyAmounts(node, nodes, entries, windowFrom, windowTo);
+
+  let amountSum = 0;
+  let pctSum = 0;
+  const weekRows = weeks.map((weekStart) => {
+    const total = weekAmount(weekStart, weekAmounts, startDate, today);
+    const target = weeklyTarget(sources, weekStart);
+    const pct = target > 0 ? (total / target) * 100 : null;
+    const weekEnd = addDays(weekStart, 6);
+    const met = target > 0 && total >= target;
+    const missed = target > 0 && !met && weekEnd < today;
+    amountSum += total;
+    pctSum += pct ?? 0;
+    return { weekStart, total, pct, met, missed };
+  });
+
+  const includesCurrent = weeks.includes(currentWeek);
+  const divisor = includesCurrent
+    ? weeks.filter((start) => start !== currentWeek).length +
+      Math.min(7, Math.max(0, daysFrom(currentWeek, today) + 1)) / 7
+    : weeks.length;
+  const avgAmount = divisor > 0 ? amountSum / divisor : 0;
+  const avgPct = divisor > 0 ? pctSum / divisor : 0;
+
+  return (
+    <>
+      <View style={styles.metricsCard}>
+        <Text style={styles.metricsTitle}>{monthName}</Text>
+        <View style={styles.metricsLabelRow}>
+          <Text style={styles.progress}>
+            {formatMetricAmount(completed)} / {formatMetricAmount(planned)}{' '}
+            {node.unit}
+          </Text>
+          <Text style={styles.progress}>
+            {monthPct == null ? '—' : `${monthPct}%`}
+          </Text>
+        </View>
+        <View style={styles.barTrack}>
+          <View
+            style={[
+              styles.barFill,
+              {
+                width: `${Math.max(0, Math.min(100, monthPct ?? 0))}%`,
+              },
+            ]}
+          />
+        </View>
+      </View>
+
+      {weeks.length > 0 ? (
+        <View style={styles.metricsCard}>
+          <View style={styles.weekNav}>
+            <Text style={styles.metricsTitle}>Weeks</Text>
+            <View style={styles.weekNavButtons}>
+              <Pressable
+                onPress={() =>
+                  setWeekOffset((value) => Math.min(maxOffset, value + 1))
+                }
+                disabled={!canGoBack}
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel="Earlier weeks"
+                accessibilityState={{ disabled: !canGoBack }}
+                style={({ pressed }) => [
+                  styles.weekNavButton,
+                  !canGoBack && styles.weekNavDisabled,
+                  pressed && canGoBack && styles.pressed,
+                ]}
+              >
+                <Ionicons name="chevron-up" size={18} color="#007aff" />
+              </Pressable>
+              <Pressable
+                onPress={() =>
+                  setWeekOffset((value) => Math.max(0, value - 1))
+                }
+                disabled={!canGoForward}
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel="Later weeks"
+                accessibilityState={{ disabled: !canGoForward }}
+                style={({ pressed }) => [
+                  styles.weekNavButton,
+                  !canGoForward && styles.weekNavDisabled,
+                  pressed && canGoForward && styles.pressed,
+                ]}
+              >
+                <Ionicons name="chevron-down" size={18} color="#007aff" />
+              </Pressable>
+            </View>
+          </View>
+
+          <View style={styles.weekRow}>
+            {DAY_LABELS.map((label, index) => (
+              <View key={`${label}-${index}`} style={styles.dayCell}>
+                <Text style={styles.dayHeaderText}>{label}</Text>
+              </View>
+            ))}
+            <View style={styles.totalCell}>
+              <Text style={styles.dayHeaderText}>Total</Text>
+            </View>
+            <View style={styles.pctCell}>
+              <Text style={styles.dayHeaderText}>%</Text>
+            </View>
+          </View>
+
+          {weekRows.map((row) => (
+            <View key={row.weekStart} style={styles.weekRow}>
+              {DAY_LABELS.map((_, index) => {
+                const date = addDays(row.weekStart, index);
+                const blank = date < startDate || date > today;
+                return (
+                  <View key={date} style={styles.dayCell}>
+                    <Text style={styles.dayAmount}>
+                      {blank
+                        ? ''
+                        : formatMetricAmount(weekAmounts.get(date) ?? 0)}
+                    </Text>
+                  </View>
+                );
+              })}
+              <View style={styles.totalCell}>
+                <Text style={styles.dayAmount}>
+                  {formatMetricAmount(row.total)}
+                </Text>
+              </View>
+              <View style={styles.pctCell}>
+                <Text style={styles.dayAmount}>
+                  {row.pct == null ? '—' : `${Math.round(row.pct)}%`}
+                </Text>
+                {row.met ? (
+                  <Text style={styles.markMet}>✓</Text>
+                ) : row.missed ? (
+                  <Text style={styles.markMissed}>✗</Text>
+                ) : (
+                  <Text style={styles.markSpacer}> </Text>
+                )}
+              </View>
+            </View>
+          ))}
+
+          <View style={[styles.weekRow, styles.weekSummaryRow]}>
+            <View style={styles.avgLabelCell}>
+              <Text style={styles.dayHeaderText}>Avg</Text>
+            </View>
+            <View style={styles.totalCell}>
+              <Text style={styles.dayAmount}>{formatMetricAmount(avgAmount)}</Text>
+            </View>
+            <View style={styles.pctCell}>
+              <Text style={styles.dayAmount}>
+                {weekRows.some((row) => row.pct != null)
+                  ? `${Math.round(avgPct)}%`
+                  : '—'}
+              </Text>
+              <Text style={styles.markSpacer}> </Text>
+            </View>
+          </View>
+        </View>
+      ) : null}
+    </>
+  );
 }
 
 function deleteMessage(count: number): string {
@@ -126,7 +410,7 @@ function StatusCircle({
   status,
   onPress,
 }: {
-  status: GoalNodeStatus;
+  status: GoalStatus;
   onPress: () => void;
 }) {
   return (
@@ -151,10 +435,10 @@ function StatusCircle({
 
 export default function StepDetailScreen({ navigation, route }: Props) {
   const { goalId } = route.params;
-  const [node, setNode] = useState<GoalNode | null>(null);
-  const [allNodes, setAllNodes] = useState<GoalNode[]>([]);
+  const [node, setNode] = useState<Goal | null>(null);
+  const [allNodes, setAllNodes] = useState<Goal[]>([]);
   const [entries, setEntries] = useState<GoalEntry[]>([]);
-  const [children, setChildren] = useState<GoalNode[]>([]);
+  const [children, setChildren] = useState<Goal[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -185,7 +469,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
     };
   }, []);
 
-  const applyNodeToDraft = useCallback((next: GoalNode) => {
+  const applyNodeToDraft = useCallback((next: Goal) => {
     const preset = next.unit != null && isPresetUnit(next.unit);
     setTitle(next.title);
     setDescription(next.description ?? '');
@@ -203,7 +487,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
   const load = useCallback(async () => {
     setLoadError(null);
     try {
-      const nodes = await getAllGoalNodes();
+      const nodes = await getAllGoals();
       const found = nodes.find((item) => item.id === goalId) ?? null;
       const ids = found ? subtreeIds(found.id, nodes) : [];
       const nextEntries = ids.length > 0 ? await getEntries(ids) : [];
@@ -286,7 +570,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
     const amount =
       !draft.trackOn && !draft.repeatOn ? null : parseAmount(draft.target);
 
-    void updateGoalNode(goalId, {
+    void updateGoal(goalId, {
       title: trimmedTitle,
       description: draft.description.trim() || null,
       unit,
@@ -334,18 +618,26 @@ export default function StepDetailScreen({ navigation, route }: Props) {
       : null;
   const hasChildren = children.length > 0;
   const displayUnit = resolvedUnit(unitChoice, customUnit, trackOn);
-  const progressNode: GoalNode | null = node
+  const progressNode: Goal | null = node
     ? {
         ...node,
         unit: displayUnit,
         targetAmount: parseAmount(target),
         repeatPeriod: repeatOn ? repeatPeriod : null,
         plannedDays: repeatOn ? plannedDays : null,
+        targetEndDate: targetEndDate.trim() || null,
       }
     : null;
+  const today = todayDateString();
   const total =
     progressNode && displayUnit
-      ? rollupTotal(progressNode, allNodes, entries)
+      ? repeatOn
+        ? periodTotal(progressNode, entries, today)
+        : (rollupTotal(progressNode, allNodes, entries) ?? 0)
+      : null;
+  const pace =
+    progressNode && displayUnit && !repeatOn
+      ? paceInfo(progressNode, total ?? 0, today)
       : null;
   const doneCount = children.filter((child) => child.status === 'done').length;
   const activeCount = children.filter(
@@ -364,7 +656,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
     }
     const next = nextGoalStatus(node.status);
     setNode({ ...node, status: next });
-    void setGoalNodeStatus(goalId, next)
+    void setGoalStatus(goalId, next)
       .then((updated) => {
         setNode(updated);
       })
@@ -374,14 +666,14 @@ export default function StepDetailScreen({ navigation, route }: Props) {
       });
   };
 
-  const cycleChildStatus = (child: GoalNode) => {
+  const cycleChildStatus = (child: Goal) => {
     const next = nextGoalStatus(child.status);
     setChildren((current) =>
       current.map((item) =>
         item.id === child.id ? { ...item, status: next } : item,
       ),
     );
-    void setGoalNodeStatus(child.id, next)
+    void setGoalStatus(child.id, next)
       .then((updated) => {
         setChildren((current) =>
           current.map((item) => (item.id === updated.id ? updated : item)),
@@ -409,7 +701,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
         style: 'destructive',
         onPress: () => {
           const removed = new Set(subtreeIds(id, allNodes));
-          void deleteGoalNode(id)
+          void deleteGoal(id)
             .then(() => {
               if (id === goalId) {
                 skipPersistRef.current = true;
@@ -457,7 +749,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
         ...item,
         sortOrder: index,
       }));
-      void reorderGoalNodes(ordered.map((item) => item.id)).catch((error) => {
+      void reorderGoals(ordered.map((item) => item.id)).catch((error) => {
         console.warn('Failed to reorder steps', error);
         void load();
       });
@@ -471,7 +763,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
       return;
     }
     setAdding(true);
-    void createGoalNode({ title: trimmed, parentId: node.id })
+    void createGoal({ title: trimmed, parentId: node.id })
       .then((created) => {
         setNewStepTitle('');
         navigation.push('StepDetail', { goalId: created.id });
@@ -535,14 +827,28 @@ export default function StepDetailScreen({ navigation, route }: Props) {
         keyboardDismissMode="interactive"
         scrollEnabled={draggingId == null}
       >
+        {parent ? (
+          <Pressable
+            onPress={() =>
+              navigation.push('StepDetail', { goalId: parent.id })
+            }
+            hitSlop={6}
+            style={({ pressed }) => [
+              styles.parentLink,
+              pressed && styles.pressed,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={`Open parent ${parent.title}`}
+          >
+            <Ionicons name="chevron-up" size={16} color="#007aff" />
+            <Text style={styles.parentLinkText} numberOfLines={1}>
+              {parent.title}
+            </Text>
+          </Pressable>
+        ) : null}
         <Text style={styles.kindLabel}>
           {node.parentId == null ? 'Goal' : 'Step'}
         </Text>
-        {parent ? (
-          <Text style={styles.parentTitle} numberOfLines={1}>
-            {parent.title}
-          </Text>
-        ) : null}
 
         <View style={styles.sectionCard}>
           <View style={styles.fields}>
@@ -700,14 +1006,72 @@ export default function StepDetailScreen({ navigation, route }: Props) {
         </View>
 
         {displayUnit ? (
-          <Text style={styles.progress}>
-            {total ?? 0} / {progressNode.targetAmount ?? '—'} {displayUnit}
-          </Text>
+          <View style={styles.progressCard}>
+            <Text style={styles.progress}>
+              {total ?? 0} / {progressNode.targetAmount ?? '—'} {displayUnit}
+              {repeatOn
+                ? ` this ${periodWord(repeatPeriod)}`
+                : ''}
+            </Text>
+            <View style={styles.barTrack}>
+              <View
+                style={[
+                  styles.barFill,
+                  {
+                    width: `${Math.max(
+                      0,
+                      Math.min(
+                        100,
+                        progressNode.targetAmount
+                          ? ((total ?? 0) / progressNode.targetAmount) * 100
+                          : 0,
+                      ),
+                    )}%`,
+                  },
+                ]}
+              />
+              {pace ? (
+                <View
+                  style={[
+                    styles.paceTick,
+                    {
+                      left: `${Math.max(0, Math.min(100, pace.pctExpected))}%`,
+                    },
+                  ]}
+                />
+              ) : null}
+            </View>
+            {!repeatOn && pace ? (
+              <Text
+                style={[
+                  styles.paceLine,
+                  pace.delta < 0 && !pace.onPace
+                    ? styles.paceBehind
+                    : styles.paceAhead,
+                ]}
+              >
+                {pace.onPace
+                  ? 'On pace'
+                  : `${Math.round(pace.pctDone)}% done · ${Math.round(Math.abs(pace.delta))}% ${pace.delta < 0 ? 'behind' : 'ahead'}`}
+              </Text>
+            ) : null}
+            {!repeatOn && !progressNode.targetEndDate ? (
+              <Text style={styles.hint}>
+                Add a target end date to see your pace.
+              </Text>
+            ) : null}
+          </View>
         ) : hasChildren ? (
           <Text style={styles.progress}>
             {doneCount} done · {activeCount} active
           </Text>
         ) : null}
+
+        <MetricsSections
+          node={progressNode}
+          nodes={allNodes}
+          entries={entries}
+        />
 
         {!repeatOn ? (
           <>
@@ -826,10 +1190,18 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#8e8e93',
   },
-  parentTitle: {
-    fontSize: 13,
-    color: '#8e8e93',
-    marginTop: -4,
+  parentLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+    maxWidth: '100%',
+  },
+  parentLinkText: {
+    flexShrink: 1,
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#007aff',
   },
   sectionCard: {
     backgroundColor: '#fff',
@@ -877,11 +1249,48 @@ const styles = StyleSheet.create({
   formStackedBlock: {
     gap: 6,
   },
+  progressCard: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 8,
+  },
   progress: {
     fontSize: 15,
     fontWeight: '600',
     color: '#333',
-    paddingHorizontal: 4,
+  },
+  barTrack: {
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#e5e5ea',
+    overflow: 'visible',
+    position: 'relative',
+  },
+  barFill: {
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#007aff',
+  },
+  paceTick: {
+    position: 'absolute',
+    top: -3,
+    width: 2,
+    height: 14,
+    marginLeft: -1,
+    borderRadius: 1,
+    backgroundColor: '#111',
+  },
+  paceLine: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  paceAhead: {
+    color: '#248a3d',
+  },
+  paceBehind: {
+    color: '#b8860b',
   },
   sectionPrompt: {
     fontSize: 15,
@@ -932,6 +1341,99 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#c62828',
+  },
+  metricsCard: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+    gap: 6,
+  },
+  metricsTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#111',
+  },
+  metricsLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  weekNav: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  weekNavButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  weekNavButton: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  weekNavDisabled: {
+    opacity: 0.3,
+  },
+  weekRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 20,
+  },
+  weekSummaryRow: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#e5e5ea',
+    marginTop: 2,
+    paddingTop: 4,
+  },
+  dayCell: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  totalCell: {
+    flex: 1.45,
+    alignItems: 'center',
+  },
+  pctCell: {
+    flex: 1.85,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 1,
+  },
+  avgLabelCell: {
+    flex: 7,
+    alignItems: 'flex-end',
+    paddingRight: 4,
+  },
+  dayHeaderText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#8e8e93',
+  },
+  dayAmount: {
+    fontSize: 10,
+    color: '#111',
+    fontVariant: ['tabular-nums'],
+  },
+  markMet: {
+    width: 12,
+    fontSize: 10,
+    textAlign: 'center',
+    color: '#34c759',
+  },
+  markMissed: {
+    width: 12,
+    fontSize: 10,
+    textAlign: 'center',
+    color: '#c62828',
+  },
+  markSpacer: {
+    width: 12,
+    fontSize: 10,
   },
   pressed: {
     opacity: 0.7,

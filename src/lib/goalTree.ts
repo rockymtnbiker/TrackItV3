@@ -1,4 +1,4 @@
-import type { GoalEntry, GoalNode, RepeatPeriod } from '../types/goalNode';
+import type { GoalEntry, Goal, RepeatPeriod } from '../types/goal';
 import { addDays, getWeekStart, parseDateString, toDateString } from '../utils/date';
 
 export type PeriodRange = {
@@ -31,7 +31,7 @@ export function getPeriodRange(
  * Tracked steps sum values. Yes/no steps count entries.
  */
 export function periodTotal(
-  node: GoalNode,
+  node: Goal,
   entries: GoalEntry[],
   date: string,
 ): number {
@@ -52,7 +52,7 @@ export function periodTotal(
 
 /** False when the step has no target amount. */
 export function isPeriodTargetMet(
-  node: GoalNode,
+  node: Goal,
   entries: GoalEntry[],
   date: string,
 ): boolean {
@@ -63,18 +63,29 @@ export function isPeriodTargetMet(
 }
 
 /** Repeating steps store planned days. An empty array still repeats. */
-export function isRepeating(node: GoalNode): boolean {
+export function isRepeating(node: Goal): boolean {
   return node.plannedDays !== null;
 }
 
-export function isTracked(node: GoalNode): boolean {
+export function isTracked(node: Goal): boolean {
   return node.unit !== null;
 }
 
+/**
+ * Dates that count toward a streak. Tracked steps count a day only when the
+ * entry value is greater than zero. Yes/no steps count any entry.
+ */
+export function completionDates(node: Goal, entries: GoalEntry[]): string[] {
+  return entries
+    .filter((entry) => entry.goalId === node.id)
+    .filter((entry) => (isTracked(node) ? (entry.value ?? 0) > 0 : true))
+    .map((entry) => entry.entryDate);
+}
+
 export function buildChildrenMap(
-  nodes: GoalNode[],
-): Map<string | null, GoalNode[]> {
-  const childrenMap = new Map<string | null, GoalNode[]>();
+  nodes: Goal[],
+): Map<string | null, Goal[]> {
+  const childrenMap = new Map<string | null, Goal[]>();
 
   for (const node of nodes) {
     const siblings = childrenMap.get(node.parentId);
@@ -93,8 +104,8 @@ export function buildChildrenMap(
 }
 
 export function isLeaf(
-  node: GoalNode,
-  childrenMap: Map<string | null, GoalNode[]>,
+  node: Goal,
+  childrenMap: Map<string | null, Goal[]>,
 ): boolean {
   return (childrenMap.get(node.id)?.length ?? 0) === 0;
 }
@@ -103,7 +114,7 @@ export function isLeaf(
  * Repeating leaves of any status except done, plus one-time leaves that are
  * active. A top-level step with no children is a leaf.
  */
-export function getActionableSteps(nodes: GoalNode[]): GoalNode[] {
+export function getActionableSteps(nodes: Goal[]): Goal[] {
   const childrenMap = buildChildrenMap(nodes);
 
   return nodes.filter((node) => {
@@ -122,8 +133,8 @@ export function getActionableSteps(nodes: GoalNode[]): GoalNode[] {
  * Null when the step does not track a unit. Null entry values are skipped.
  */
 export function rollupTotal(
-  node: GoalNode,
-  nodes: GoalNode[],
+  node: Goal,
+  nodes: Goal[],
   entries: GoalEntry[],
 ): number | null {
   if (node.unit == null) {
@@ -161,4 +172,50 @@ export function rollupTotal(
   }
 
   return total;
+}
+
+export type PaceInfo = {
+  pctDone: number;
+  pctExpected: number;
+  delta: number;
+  onPace: boolean;
+};
+
+function calendarDaysBetween(start: string, end: string): number {
+  const ms =
+    parseDateString(end.slice(0, 10)).getTime() -
+    parseDateString(start.slice(0, 10)).getTime();
+  return Math.round(ms / 86_400_000);
+}
+
+/**
+ * Cumulative pace from the actual start (or created date) through the target end.
+ * Null when there is no target amount or deadline, or the deadline is not after the start.
+ */
+export function paceInfo(
+  node: Goal,
+  total: number,
+  today: string,
+): PaceInfo | null {
+  const start = (node.actualStartDate ?? node.createdDate).slice(0, 10);
+  const deadline = node.targetEndDate?.slice(0, 10) || null;
+  if (node.targetAmount == null || !deadline || deadline <= start) {
+    return null;
+  }
+
+  const totalDays = calendarDaysBetween(start, deadline) + 1;
+  const elapsedDays = Math.min(
+    totalDays,
+    Math.max(0, calendarDaysBetween(start, today.slice(0, 10)) + 1),
+  );
+  const pctDone = (total / node.targetAmount) * 100;
+  const pctExpected = (elapsedDays / totalDays) * 100;
+  const delta = pctDone - pctExpected;
+
+  return {
+    pctDone,
+    pctExpected,
+    delta,
+    onPace: Math.abs(delta) < 1,
+  };
 }

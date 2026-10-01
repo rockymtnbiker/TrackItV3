@@ -1,6 +1,7 @@
+import { Ionicons } from '@expo/vector-icons';
 import { useMemo, useRef, type ReactNode } from 'react';
 import { StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector, Pressable } from 'react-native-gesture-handler';
 import Animated, {
   runOnJS,
   useAnimatedStyle,
@@ -10,6 +11,7 @@ import Animated, {
 
 export const DEFAULT_DRAGGABLE_ITEM_HEIGHT = 52;
 export const LONG_PRESS_MS = 400;
+const SWIPE_DELETE_WIDTH = 72;
 
 type Props = {
   index: number;
@@ -21,6 +23,9 @@ type Props = {
   onDragStart: () => void;
   onDragMove: (dy: number) => void;
   onDragEnd: (fromIndex: number, toIndex: number) => void;
+  /** Reveals a delete button on a horizontal swipe. Kept in the same gesture as drag so the two don't block each other. */
+  onSwipeDelete?: () => void;
+  deleteAccessibilityLabel?: string;
   children: ReactNode;
   style?: StyleProp<ViewStyle>;
 };
@@ -33,6 +38,8 @@ export function DraggableItem({
   onDragStart,
   onDragMove,
   onDragEnd,
+  onSwipeDelete,
+  deleteAccessibilityLabel = 'Delete',
   children,
   style,
 }: Props) {
@@ -51,13 +58,21 @@ export function DraggableItem({
   onDragMoveRef.current = onDragMove;
   const onDragEndRef = useRef(onDragEnd);
   onDragEndRef.current = onDragEnd;
+  const onSwipeDeleteRef = useRef(onSwipeDelete);
+  onSwipeDeleteRef.current = onSwipeDelete;
 
   const translateY = useSharedValue(0);
+  const swipeX = useSharedValue(0);
   const lifted = useSharedValue(0);
 
   const beginDrag = () => {
     dragSessionRef.current = true;
     onDragStartRef.current();
+  };
+
+  const handleSwipeDelete = () => {
+    swipeX.value = withTiming(0, { duration: 180 });
+    onSwipeDeleteRef.current?.();
   };
 
   const moveDrag = (dy: number) => {
@@ -82,12 +97,39 @@ export function DraggableItem({
   };
 
   const gesture = useMemo(() => {
+    const swipe =
+      onSwipeDelete != null
+        ? Gesture.Pan()
+            .enabled(enabled)
+            .activeOffsetX([-15, 15])
+            .failOffsetY([-12, 12])
+            .onUpdate((event) => {
+              swipeX.value = Math.min(
+                0,
+                Math.max(-SWIPE_DELETE_WIDTH, event.translationX),
+              );
+            })
+            .onEnd((event) => {
+              const open =
+                event.translationX < -SWIPE_DELETE_WIDTH / 2 ||
+                event.velocityX < -500;
+              swipeX.value = withTiming(open ? -SWIPE_DELETE_WIDTH : 0, {
+                duration: 180,
+              });
+            })
+        : null;
+
     const pan = Gesture.Pan()
       .activateAfterLongPress(LONG_PRESS_MS)
-      .enabled(enabled)
+      .enabled(enabled);
+    if (swipe) {
+      pan.blocksExternalGesture(swipe);
+    }
+    pan
       .onStart(() => {
         // Set immediately so zIndex/elevation kick in before the first frame.
         lifted.value = 1;
+        swipeX.value = 0;
         runOnJS(beginDrag)();
       })
       .onUpdate((event) => {
@@ -107,8 +149,12 @@ export function DraggableItem({
         }
       });
 
+    // Race so a long-press drag and a horizontal swipe can each win.
+    // blocksExternalGesture lets the drag take the touch from the swipe.
+    const dragOrSwipe = swipe != null ? Gesture.Race(pan, swipe) : pan;
+
     if (!onPress) {
-      return pan;
+      return dragOrSwipe;
     }
 
     // Pan is listed first so a successful long-press drag cancels the tap.
@@ -118,13 +164,21 @@ export function DraggableItem({
       .enabled(enabled)
       .maxDuration(LONG_PRESS_MS - 50)
       .onEnd(() => {
+        if (swipeX.value < -1) {
+          swipeX.value = withTiming(0, { duration: 180 });
+          return;
+        }
         runOnJS(handlePress)();
       });
 
-    return Gesture.Exclusive(pan, tap);
+    return Gesture.Exclusive(dragOrSwipe, tap);
     // Shared values + refs keep handlers current.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, Boolean(onPress)]);
+  }, [enabled, Boolean(onPress), onSwipeDelete != null]);
+
+  const swipeStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: swipeX.value }],
+  }));
 
   const animatedStyle = useAnimatedStyle(() => {
     const active = lifted.value > 0;
@@ -139,16 +193,39 @@ export function DraggableItem({
     };
   });
 
+  if (!onSwipeDelete) {
+    return (
+      <GestureDetector gesture={gesture}>
+        <Animated.View
+          style={[styles.base, style, animatedStyle]}
+          accessibilityHint="Long press and drag to reorder"
+          accessibilityRole={onPress ? 'button' : undefined}
+        >
+          {children}
+        </Animated.View>
+      </GestureDetector>
+    );
+  }
+
   return (
-    <GestureDetector gesture={gesture}>
-      <Animated.View
-        style={[styles.base, style, animatedStyle]}
-        accessibilityHint="Long press and drag to reorder"
-        accessibilityRole={onPress ? 'button' : undefined}
+    <Animated.View style={[style, animatedStyle]}>
+      <Pressable
+        onPress={handleSwipeDelete}
+        style={styles.swipeDelete}
+        accessibilityLabel={deleteAccessibilityLabel}
       >
-        {children}
-      </Animated.View>
-    </GestureDetector>
+        <Ionicons name="trash" size={20} color="#fff" />
+      </Pressable>
+      <GestureDetector gesture={gesture}>
+        <Animated.View
+          style={[styles.base, swipeStyle]}
+          accessibilityHint="Long press and drag to reorder"
+          accessibilityRole={onPress ? 'button' : undefined}
+        >
+          {children}
+        </Animated.View>
+      </GestureDetector>
+    </Animated.View>
   );
 }
 
@@ -158,5 +235,16 @@ const styles = StyleSheet.create({
     shadowColor: '#000',
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
+  },
+  swipeDelete: {
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    bottom: 0,
+    width: SWIPE_DELETE_WIDTH,
+    backgroundColor: '#ff3b30',
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

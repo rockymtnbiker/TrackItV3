@@ -13,29 +13,12 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import type { GoalStatus, TargetPeriod, Weekday } from '../types';
 import {
   dateFromIso,
   formatDateMDY,
   isoFromDate,
   todayDateString,
-  WEEKDAY_SHORT_LABELS,
-  WEEKDAYS,
 } from '../utils/date';
-
-export const PERIOD_OPTIONS: { value: TargetPeriod; label: string }[] = [
-  { value: 'None', label: 'None' },
-  { value: 'Day', label: 'Day' },
-  { value: 'Week', label: 'Week' },
-  { value: 'Month', label: 'Month' },
-  { value: 'Instance', label: 'Per Session' },
-];
-
-const GOAL_STATUS_OPTIONS: { value: GoalStatus; label: string }[] = [
-  { value: 'pending', label: 'Pending' },
-  { value: 'active', label: 'Active' },
-  { value: 'done', label: 'Done' },
-];
 
 export function FormFieldRow({
   label,
@@ -265,104 +248,6 @@ export function FormDescriptionField({
   );
 }
 
-export function FormDayPicker({
-  selectedDays,
-  onToggleDay,
-}: {
-  selectedDays: Weekday[];
-  onToggleDay: (day: Weekday) => void;
-}) {
-  return (
-    <View style={styles.dayPicker}>
-      {WEEKDAYS.map((day) => {
-        const isSelected = selectedDays.includes(day);
-        return (
-          <Pressable
-            key={day}
-            onPress={() => onToggleDay(day)}
-            style={({ pressed }) => [
-              styles.dayChip,
-              isSelected && styles.dayChipSelected,
-              pressed && styles.pressed,
-            ]}
-          >
-            <Text
-              style={[
-                styles.dayChipText,
-                isSelected && styles.dayChipTextSelected,
-              ]}
-            >
-              {WEEKDAY_SHORT_LABELS[day]}
-            </Text>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-}
-
-export function FormScheduledDaysBlock({
-  selectedDays,
-  onToggleDay,
-}: {
-  selectedDays: Weekday[];
-  onToggleDay: (day: Weekday) => void;
-}) {
-  return (
-    <View style={styles.formStackedBlock}>
-      <Text style={styles.formFieldLabel}>Scheduled Days</Text>
-      <FormDayPicker selectedDays={selectedDays} onToggleDay={onToggleDay} />
-    </View>
-  );
-}
-
-/** 3-way Pending / Active / Done control for Goals and Milestones. */
-export function FormStatusSegment({
-  value,
-  onChange,
-}: {
-  value: GoalStatus;
-  onChange: (status: GoalStatus) => void;
-}) {
-  return (
-    <View style={styles.statusSegment}>
-      {GOAL_STATUS_OPTIONS.map((option) => {
-        const selected = value === option.value;
-        return (
-          <Pressable
-            key={option.value}
-            onPress={() => onChange(option.value)}
-            style={({ pressed }) => [
-              styles.statusSegmentOption,
-              selected && styles.statusSegmentOptionSelected,
-              selected &&
-                option.value === 'pending' &&
-                styles.statusSegmentPending,
-              selected &&
-                option.value === 'active' &&
-                styles.statusSegmentActive,
-              selected && option.value === 'done' && styles.statusSegmentDone,
-              pressed && styles.pressed,
-            ]}
-            accessibilityRole="button"
-            accessibilityState={{ selected }}
-            accessibilityLabel={`Status ${option.label}`}
-          >
-            <Text
-              style={[
-                styles.statusSegmentText,
-                selected && styles.statusSegmentTextSelected,
-              ]}
-            >
-              {option.label}
-            </Text>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-}
-
 export const formFieldStyles = StyleSheet.create({
   formFieldRow: {
     flexDirection: 'row',
@@ -517,42 +402,6 @@ export const formFieldStyles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: '#fff',
-  },
-  statusSegment: {
-    flexDirection: 'row',
-    flex: 1,
-    backgroundColor: '#f0f0f0',
-    borderRadius: 8,
-    padding: 2,
-    gap: 2,
-  },
-  statusSegmentOption: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 8,
-    minHeight: 36,
-    borderRadius: 6,
-  },
-  statusSegmentOptionSelected: {
-    backgroundColor: '#fff',
-  },
-  statusSegmentPending: {
-    backgroundColor: '#fff8e1',
-  },
-  statusSegmentActive: {
-    backgroundColor: '#e3f2fd',
-  },
-  statusSegmentDone: {
-    backgroundColor: '#e8f5e9',
-  },
-  statusSegmentText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#666',
-  },
-  statusSegmentTextSelected: {
-    color: '#111',
   },
   pressed: {
     opacity: 0.7,

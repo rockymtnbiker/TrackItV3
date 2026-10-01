@@ -1,13 +1,13 @@
-import type { GoalNodeStatus } from '../types/goalNode';
+import type { GoalStatus } from '../types/goal';
 
 /**
- * Same actual-date rules as setGoalStatus and setMilestoneStatus:
+ * Actual-date rules when a goal's status changes:
  * - active: set actual_start_date to today if null; clear actual_end_date if set
  * - done: set actual_end_date to today
  * - pending: status only
  */
 export function captureStatusDates(
-  newStatus: GoalNodeStatus,
+  newStatus: GoalStatus,
   existing: {
     actual_start_date: string | null;
     actual_end_date: string | null;

@@ -1,5 +1,8 @@
 import { addDays, todayDateString } from './date';
 
+/** Days of entry history kept so a streak can be counted through today. */
+export const STREAK_LOOKBACK_DAYS = 90;
+
 export function calculateStreak(
   completionLog: string[],
   referenceDate: string = todayDateString(),
