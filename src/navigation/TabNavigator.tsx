@@ -1,4 +1,4 @@
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { createMaterialTopTabNavigator } from '@react-navigation/material-top-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Platform, StyleSheet } from 'react-native';
@@ -34,7 +34,7 @@ function TodayStackNavigator() {
       <TodayStack.Screen
         name="TodayMain"
         component={TodayScreen}
-        options={{ title: 'Today' }}
+        options={{ headerShown: false }}
       />
       <TodayStack.Screen
         name="StepDetail"
@@ -51,7 +51,7 @@ function DashboardStackNavigator() {
       <DashboardStack.Screen
         name="DashboardMain"
         component={DashboardScreen}
-        options={{ title: 'Dashboard' }}
+        options={{ headerShown: false }}
       />
       <DashboardStack.Screen
         name="StepDetail"
@@ -68,6 +68,7 @@ export default function TabNavigator() {
 
   return (
     <Tab.Navigator
+      initialRouteName="Today"
       tabBarPosition="bottom"
       screenOptions={{
         swipeEnabled: true,
@@ -105,10 +106,25 @@ export default function TabNavigator() {
       }}
     >
       <Tab.Screen
+        name="Goals"
+        component={GoalsStackNavigator}
+        options={{
+          tabBarLabel: 'Plan',
+          tabBarIcon: ({ focused, color }) => (
+            <MaterialCommunityIcons
+              name={focused ? 'clipboard-edit' : 'clipboard-edit-outline'}
+              size={24}
+              color={color}
+              style={styles.tabIcon}
+            />
+          ),
+        }}
+      />
+      <Tab.Screen
         name="Today"
         component={TodayStackNavigator}
         options={{
-          tabBarLabel: 'Today',
+          tabBarLabel: 'Do',
           tabBarIcon: ({ focused, color }) => (
             <Ionicons
               name={focused ? 'calendar' : 'calendar-outline'}
@@ -120,25 +136,10 @@ export default function TabNavigator() {
         }}
       />
       <Tab.Screen
-        name="Goals"
-        component={GoalsStackNavigator}
-        options={{
-          tabBarLabel: 'Goals',
-          tabBarIcon: ({ focused, color }) => (
-            <Ionicons
-              name={focused ? 'flag' : 'flag-outline'}
-              size={24}
-              color={color}
-              style={styles.tabIcon}
-            />
-          ),
-        }}
-      />
-      <Tab.Screen
         name="Dashboard"
         component={DashboardStackNavigator}
         options={{
-          tabBarLabel: 'Dashboard',
+          tabBarLabel: 'Review',
           tabBarIcon: ({ focused, color }) => (
             <Ionicons
               name={focused ? 'stats-chart' : 'stats-chart-outline'}

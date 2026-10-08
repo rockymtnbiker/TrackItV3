@@ -580,7 +580,6 @@ export default function DashboardScreen({ navigation }: Props) {
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       <ScrollView style={styles.container} contentContainerStyle={styles.content}>
         <View style={styles.headerRow}>
-          <Text style={styles.screenTitle}>Dashboard</Text>
           <Pressable
             onPress={handleSignOut}
             disabled={signingOut}
@@ -744,13 +743,8 @@ const styles = StyleSheet.create({
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-end',
     marginBottom: 10,
-  },
-  screenTitle: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#111',
   },
   logoutButton: {
     padding: 4,

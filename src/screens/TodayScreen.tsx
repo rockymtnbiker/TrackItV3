@@ -17,6 +17,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { KeyboardSafe } from '../components/KeyboardSafe';
 import { PendingStatusCircle } from '../components/PendingStatusCircle';
 import {
@@ -174,7 +175,7 @@ function contextTitle(
   return `${parent.title} · ${top.title}`;
 }
 
-/** Repeating steps stay on Today until they are marked done. Planned days only affect order. */
+/** Repeating steps stay on Today until they are marked done. Planned days only mark the row. */
 function listedAsRepeating(node: Goal): boolean {
   return (
     (isRepeating(node) || node.repeatPeriod != null) && node.status !== 'done'
@@ -230,6 +231,48 @@ function showsInProgress(
     return false;
   }
   return isLeaf(node, childrenMap) || node.status === 'active';
+}
+
+/**
+ * Steps that already qualify for Today, in the same order as the Plan list:
+ * top-level goals by sort order, then each goal's steps depth-first.
+ */
+function actionableInPlanOrder(
+  nodes: Goal[],
+  childrenMap: Map<string | null, Goal[]>,
+  today: string,
+): Goal[] {
+  const included = new Set(
+    nodes
+      .filter(
+        (node) =>
+          listedAsRepeating(node) || showsInProgress(node, today, childrenMap),
+      )
+      .map((node) => node.id),
+  );
+  const ordered: Goal[] = [];
+  const seen = new Set<string>();
+
+  const walk = (node: Goal) => {
+    seen.add(node.id);
+    if (included.has(node.id)) {
+      ordered.push(node);
+    }
+    for (const child of childrenMap.get(node.id) ?? []) {
+      walk(child);
+    }
+  };
+
+  for (const root of childrenMap.get(null) ?? []) {
+    walk(root);
+  }
+
+  const leftovers = nodes
+    .filter((node) => included.has(node.id) && !seen.has(node.id))
+    .sort(
+      (a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title),
+    );
+  return [...ordered, ...leftovers];
 }
 
 /** Weeks rendered on each side of the initially focused week. */
@@ -898,19 +941,6 @@ export default function TodayScreen() {
     const future = isFutureDate(selectedDate, today);
     return nodes
       .filter((node) => listedAsRepeating(node))
-      .sort((a, b) => {
-        const rank = (node: Goal) => {
-          if (isPeriodTargetMet(node, entries, selectedDate)) {
-            return 2;
-          }
-          return isPlannedOnDate(node.plannedDays, selectedDate) ? 0 : 1;
-        };
-        const byRank = rank(a) - rank(b);
-        if (byRank !== 0) {
-          return byRank;
-        }
-        return a.sortOrder - b.sortOrder || a.title.localeCompare(b.title);
-      })
       .map((node): RepeatingRow => {
         const tracked = isTracked(node);
         const total = periodTotal(node, entries, selectedDate);
@@ -941,12 +971,13 @@ export default function TodayScreen() {
       });
   }, [entries, nodes, nodesById, selectedDate, today]);
 
-  const inProgressSteps = useMemo(
-    () =>
-      nodes
-        .filter((node) => showsInProgress(node, today, childrenMap))
-        .sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title)),
+  const orderedSteps = useMemo(
+    () => actionableInPlanOrder(nodes, childrenMap, today),
     [childrenMap, nodes, today],
+  );
+  const repeatingById = useMemo(
+    () => new Map(repeatingRows.map((row) => [row.id, row])),
+    [repeatingRows],
   );
 
   const checklistHeading = getChecklistHeading(selectedDate, today);
@@ -1166,15 +1197,15 @@ export default function TodayScreen() {
 
   if (loading && nodes.length === 0) {
     return (
-      <View style={styles.loadingState}>
+      <SafeAreaView style={styles.loadingState} edges={['top']}>
         <ActivityIndicator color="#007aff" />
-      </View>
+      </SafeAreaView>
     );
   }
 
   if (loadError && nodes.length === 0) {
     return (
-      <View style={styles.loadingState}>
+      <SafeAreaView style={styles.loadingState} edges={['top']}>
         <Text style={styles.errorText}>{loadError}</Text>
         <Pressable
           onPress={() => void loadTodayData(visibleWeekStart)}
@@ -1185,12 +1216,12 @@ export default function TodayScreen() {
         >
           <Text style={styles.retryButtonText}>Retry</Text>
         </Pressable>
-      </View>
+      </SafeAreaView>
     );
   }
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.affirmation}>{headerTitle}</Text>
 
@@ -1226,11 +1257,25 @@ export default function TodayScreen() {
 
       <Text style={styles.screenTitle}>{checklistHeading}</Text>
 
-      {inProgressSteps.length > 0 ? (
+      {orderedSteps.length > 0 ? (
         <View style={styles.sectionBlock}>
-          <Text style={styles.sectionHeader}>In Progress</Text>
           <View style={styles.checklistCard}>
-            {inProgressSteps.map((step) => {
+            {orderedSteps.map((step) => {
+              const row = repeatingById.get(step.id);
+              if (row) {
+                return (
+                  <ChecklistRow
+                    key={row.id}
+                    item={row}
+                    onToggle={() => handleToggle(row)}
+                    onOpen={() =>
+                      navigation.navigate('StepDetail', { goalId: row.id })
+                    }
+                    onLog={row.tracked ? () => openLog(row.id) : undefined}
+                  />
+                );
+              }
+
               const tracked = isTracked(step);
               const total = tracked ? (rollupTotal(step, nodes, entries) ?? 0) : 0;
               const target =
@@ -1257,26 +1302,7 @@ export default function TodayScreen() {
             })}
           </View>
         </View>
-      ) : null}
-
-      {repeatingRows.length > 0 ? (
-        <View style={styles.sectionBlock}>
-          <Text style={styles.sectionHeader}>Habits</Text>
-          <View style={styles.checklistCard}>
-            {repeatingRows.map((row) => (
-              <ChecklistRow
-                key={row.id}
-                item={row}
-                onToggle={() => handleToggle(row)}
-                onOpen={() =>
-                  navigation.navigate('StepDetail', { goalId: row.id })
-                }
-                onLog={row.tracked ? () => openLog(row.id) : undefined}
-              />
-            ))}
-          </View>
-        </View>
-      ) : inProgressSteps.length === 0 ? (
+      ) : (
         <View style={styles.emptyCard}>
           <Text style={styles.emptyText}>
             {selectedDate === today
@@ -1284,7 +1310,7 @@ export default function TodayScreen() {
               : 'Nothing scheduled for this day.'}
           </Text>
         </View>
-      ) : null}
+      )}
     </ScrollView>
 
       <Modal
@@ -1350,7 +1376,7 @@ export default function TodayScreen() {
           </Pressable>
         </KeyboardSafe>
       </Modal>
-    </View>
+    </SafeAreaView>
   );
 }
 

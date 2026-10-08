@@ -189,6 +189,7 @@ export function DraggableItem({
       ],
       zIndex: active ? 1000 : 0,
       elevation: active ? 24 : 0,
+      position: 'relative',
       shadowOpacity: active ? 0.2 : 0.06,
     };
   });

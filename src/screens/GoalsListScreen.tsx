@@ -4,7 +4,6 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Modal,
   StyleSheet,
   Text,
@@ -17,7 +16,6 @@ import { KeyboardSafe } from '../components/KeyboardSafe';
 import { FormFieldRow, FormInlineInput } from '../components/FormFields';
 import {
   createGoal,
-  deleteGoal,
   getAllGoals,
   getEntries,
   reorderGoals,
@@ -35,37 +33,6 @@ type Props = NativeStackScreenProps<GoalsStackParamList, 'GoalsList'>;
 
 /** Approximate goal card height (padding + title + meta + margin). */
 const LIST_CARD_HEIGHT = 72;
-
-function descendantIds(rootId: string, nodes: Goal[]): string[] {
-  const childrenMap = buildChildrenMap(nodes);
-  const ids: string[] = [];
-  const seen = new Set<string>();
-  const stack = [...(childrenMap.get(rootId) ?? [])];
-
-  while (stack.length > 0) {
-    const child = stack.pop();
-    if (!child || seen.has(child.id)) {
-      continue;
-    }
-    seen.add(child.id);
-    ids.push(child.id);
-    for (const grandchild of childrenMap.get(child.id) ?? []) {
-      stack.push(grandchild);
-    }
-  }
-
-  return ids;
-}
-
-function deleteMessage(count: number): string {
-  if (count <= 0) {
-    return 'This goal will be deleted.';
-  }
-  if (count === 1) {
-    return 'This goal and 1 sub-step will be deleted.';
-  }
-  return `This goal and ${count} sub-steps will be deleted.`;
-}
 
 function cardSubtitle(
   node: Goal,
@@ -105,8 +72,6 @@ export default function GoalsListScreen({ navigation }: Props) {
   const [title, setTitle] = useState('');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-  const [draggingId, setDraggingId] = useState<string | null>(null);
-  const scrollRef = useRef<ScrollView>(null);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -196,32 +161,9 @@ export default function GoalsListScreen({ navigation }: Props) {
     });
   };
 
-  const confirmDelete = (node: Goal) => {
-    const count = descendantIds(node.id, nodes).length;
-    Alert.alert('Delete goal?', deleteMessage(count), [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => {
-          const removed = new Set([node.id, ...descendantIds(node.id, nodes)]);
-          setNodes((current) => current.filter((item) => !removed.has(item.id)));
-          setEntries((current) =>
-            current.filter((entry) => !removed.has(entry.goalId)),
-          );
-          void deleteGoal(node.id).catch((error) => {
-            console.warn('Failed to delete goal', error);
-            void load();
-          });
-        },
-      },
-    ]);
-  };
-
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ScrollView
-        ref={scrollRef}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
@@ -230,7 +172,6 @@ export default function GoalsListScreen({ navigation }: Props) {
         disallowInterruption={false}
       >
         <View style={styles.headerRow}>
-          <Text style={styles.sectionHeader}>Goals</Text>
           <Pressable
             onPress={openCreate}
             style={({ pressed }) => [
@@ -266,21 +207,14 @@ export default function GoalsListScreen({ navigation }: Props) {
           </Text>
         ) : (
           visibleNodes.map((node, index) => (
-            <View
-              key={node.id}
-              style={draggingId === node.id ? styles.draggingWrap : undefined}
-            >
               <DraggableItem
+                key={node.id}
                 index={index}
                 itemHeight={LIST_CARD_HEIGHT}
                 onPress={() =>
                   navigation.navigate('StepDetail', { goalId: node.id })
                 }
-                onDragStart={() => {
-                  setDraggingId(node.id);
-                  scrollRef.current?.setNativeProps({ scrollEnabled: false });
-                  navigation.getParent()?.setOptions({ swipeEnabled: false });
-                }}
+                onDragStart={() => {}}
                 onDragMove={() => {}}
                 onDragEnd={(from, to) => {
                   const clampedTo = Math.max(
@@ -288,13 +222,8 @@ export default function GoalsListScreen({ navigation }: Props) {
                     Math.min(listRef.current.length - 1, to),
                   );
                   reorderNodes(from, clampedTo);
-                  scrollRef.current?.setNativeProps({ scrollEnabled: true });
-                  navigation.getParent()?.setOptions({ swipeEnabled: true });
-                  setDraggingId(null);
                 }}
                 style={styles.dragHost}
-                onSwipeDelete={() => confirmDelete(node)}
-                deleteAccessibilityLabel="Delete goal"
               >
                 <View style={styles.card}>
                   <View style={styles.titleRow}>
@@ -315,7 +244,6 @@ export default function GoalsListScreen({ navigation }: Props) {
                   </Text>
                 </View>
               </DraggableItem>
-            </View>
           ))
         )}
       </ScrollView>
@@ -395,13 +323,8 @@ const styles = StyleSheet.create({
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-end',
     marginBottom: 10,
-  },
-  sectionHeader: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#111',
   },
   addButton: {
     padding: 4,
@@ -450,11 +373,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.06,
     shadowRadius: 4,
     elevation: 2,
-  },
-  draggingWrap: {
-    zIndex: 1000,
-    elevation: 24,
-    position: 'relative',
   },
   titleRow: {
     flexDirection: 'row',

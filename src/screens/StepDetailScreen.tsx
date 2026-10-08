@@ -24,6 +24,7 @@ import {
   formFieldStyles,
 } from '../components/FormFields';
 import { KeyboardSafe } from '../components/KeyboardSafe';
+import { confirmDeleteGoal, descendantIds } from '../lib/goalDeleteConfirm';
 import { PendingStatusCircle } from '../components/PendingStatusCircle';
 import { ProgressLineChart } from '../components/ProgressLineChart';
 import { UNIT_OPTIONS } from '../constants';
@@ -1181,10 +1182,35 @@ export default function StepDetailScreen({ navigation, route }: Props) {
         ) : null}
 
         <Pressable
-          onPress={() => confirmDelete(goalId)}
+          onPress={() =>
+            confirmDeleteGoal(descendantIds(node.id, allNodes).length, () => {
+              void deleteGoal(node.id)
+                .then(() => {
+                  skipPersistRef.current = true;
+                  if (aliveRef.current) {
+                    navigation.goBack();
+                  }
+                })
+                .catch((error) => {
+                  console.warn('Failed to delete goal', error);
+                  Alert.alert(
+                    'Delete failed',
+                    error instanceof Error
+                      ? error.message
+                      : 'Could not delete this step.',
+                  );
+                });
+            })
+          }
           style={({ pressed }) => [styles.deleteButton, pressed && styles.pressed]}
+          accessibilityRole="button"
+          accessibilityLabel={
+            node.parentId == null ? 'Delete goal' : 'Delete step'
+          }
         >
-          <Text style={styles.deleteButtonText}>Delete</Text>
+          <Text style={styles.deleteButtonText}>
+            {node.parentId == null ? 'Delete goal' : 'Delete step'}
+          </Text>
         </Pressable>
       </ScrollView>
     </KeyboardSafe>
@@ -1367,15 +1393,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   deleteButton: {
-    marginTop: 4,
+    marginTop: 12,
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 12,
     minHeight: 44,
-    borderRadius: 12,
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#ffcdd2',
   },
   deleteButtonText: {
     fontSize: 16,
