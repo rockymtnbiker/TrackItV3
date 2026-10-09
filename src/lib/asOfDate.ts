@@ -32,7 +32,7 @@ export function oneTimeOnDate(node: Goal, asOf: string): OneTimeOnDate {
     return 'hidden';
   }
 
-  const completed = node.completedOn?.slice(0, 10) || null;
+  const completed = node.actualEndDate?.slice(0, 10) || null;
   if (node.status === 'done' && completed == null) {
     return 'hidden';
   }

@@ -23,7 +23,6 @@ type GoalRow = {
   target_end_date: string | null;
   actual_start_date: string | null;
   actual_end_date: string | null;
-  completed_on: string | null;
   created_date: string | null;
   deleted_at: string | null;
   unit: string | null;
@@ -109,7 +108,6 @@ function mapRowToNode(row: GoalRow): Goal {
     targetEndDate: dateOrNull(row.target_end_date),
     actualStartDate: dateOrNull(row.actual_start_date),
     actualEndDate: dateOrNull(row.actual_end_date),
-    completedOn: dateOrNull(row.completed_on),
     createdDate: (row.created_date ?? '').slice(0, 10),
     unit: row.unit,
     targetAmount: amountToNumber(row.target_amount) ?? null,
@@ -390,19 +388,10 @@ export async function updateGoal(
   return mapRowToNode(data as GoalRow);
 }
 
-/** Local calendar date (YYYY-MM-DD), or today when the caller omits one. */
-function completedOnDate(value: string | undefined): string {
-  const date = dateOrNull(value);
-  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    return date;
-  }
-  return todayDateString();
-}
-
 export async function setGoalStatus(
   id: string,
   status: GoalStatus,
-  completedOn?: string,
+  endDate?: string,
 ): Promise<Goal> {
   const userId = await requireUserId();
   const existing = await fetchNodeRow(id, userId);
@@ -411,11 +400,9 @@ export async function setGoalStatus(
   }
 
   const today = todayDateString();
-  const updates = captureStatusDates(status, existing, today);
+  const updates = captureStatusDates(status, existing, today, endDate);
   const fillStart = updates.actual_start_date ?? null;
   delete updates.actual_start_date;
-  updates.completed_on =
-    status === 'done' ? completedOnDate(completedOn) : null;
 
   if (fillStart) {
     const { error: startError } = await supabase

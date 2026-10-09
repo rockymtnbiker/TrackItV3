@@ -40,7 +40,6 @@ import {
   buildChildrenMap,
   isLeaf,
   completionDates,
-  isDaily,
   isRepeating,
   isTracked,
   rollupTotal,
@@ -307,7 +306,7 @@ function periodPhrase(step: Goal): string {
   if (step.repeatPeriod === 'month') {
     return 'this month';
   }
-  return isDaily(step) ? 'Daily' : 'this week';
+  return 'this week';
 }
 
 function detailSubtitle(
@@ -1431,14 +1430,12 @@ export default function TodayScreen() {
           return {
             ...node,
             status: 'done',
-            completedOn: selectedDate,
             actualEndDate: selectedDate,
           };
         }
         return {
           ...node,
           status: next,
-          completedOn: null,
           actualEndDate: null,
         };
       }),
@@ -1447,19 +1444,7 @@ export default function TodayScreen() {
     void setGoalStatus(step.id, next, markingDone ? selectedDate : undefined)
       .then((updated) => {
         setNodes((current) =>
-          current.map((node) => {
-            if (node.id !== updated.id) {
-              return node;
-            }
-            if (
-              updated.status === 'pending' &&
-              !updated.actualEndDate &&
-              node.actualEndDate
-            ) {
-              return { ...updated, actualEndDate: node.actualEndDate };
-            }
-            return updated;
-          }),
+          current.map((node) => (node.id === updated.id ? updated : node)),
         );
       })
       .catch((error) => {

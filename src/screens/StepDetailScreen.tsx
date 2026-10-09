@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { ScrollView } from 'react-native-gesture-handler';
 import { EditableOrderedRow } from '../components/EditableOrderedRow';
+import { DatePickerModal } from '../components/DatePickerModal';
 import {
   FormDateRow,
   FormDescriptionField,
@@ -63,8 +64,8 @@ import { nextGoalStatus } from '../types';
 import {
   addDays,
   dateFromIso,
-  formatDateMDY,
   getWeekStart,
+  isoFromDate,
   parseDateString,
   todayDateString,
 } from '../utils/date';
@@ -98,6 +99,15 @@ const PERIOD_CHOICES = [
 
 function isPresetUnit(unit: string): boolean {
   return (UNIT_OPTIONS as readonly string[]).includes(unit);
+}
+
+function cappedToToday(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const today = todayDateString();
+  return trimmed > today ? today : trimmed;
 }
 
 function parseAmount(value: string): number | null {
@@ -476,8 +486,15 @@ export default function StepDetailScreen({ navigation, route }: Props) {
   const [repeatPeriod, setRepeatPeriod] = useState<RepeatPeriod>('week');
   const [plannedDays, setPlannedDays] = useState<number[]>([]);
   const [actualStartDate, setActualStartDate] = useState('');
+  const [actualEndDate, setActualEndDate] = useState('');
   const [targetStartDate, setTargetStartDate] = useState('');
   const [targetEndDate, setTargetEndDate] = useState('');
+  const [donePrompt, setDonePrompt] = useState<{
+    id: string;
+    scope: 'self' | 'child';
+    initialDate: string;
+    minimumDate: string | null;
+  } | null>(null);
   const [newStepTitle, setNewStepTitle] = useState('');
   const [draggingId, setDraggingId] = useState<string | null>(null);
 
@@ -505,6 +522,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
     setRepeatPeriod(next.repeatPeriod ?? 'week');
     setPlannedDays(next.plannedDays ?? []);
     setActualStartDate(next.actualStartDate ?? '');
+    setActualEndDate(next.actualEndDate ?? '');
     setTargetStartDate(next.targetStartDate ?? '');
     setTargetEndDate(next.targetEndDate ?? '');
   }, []);
@@ -550,6 +568,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
     repeatPeriod,
     plannedDays,
     actualStartDate,
+    actualEndDate,
     targetStartDate,
     targetEndDate,
   });
@@ -564,6 +583,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
     repeatPeriod,
     plannedDays,
     actualStartDate,
+    actualEndDate,
     targetStartDate,
     targetEndDate,
   };
@@ -614,6 +634,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
         : {}),
       targetStartDate: draft.targetStartDate.trim() || null,
       targetEndDate: draft.targetEndDate.trim() || null,
+      actualEndDate: cappedToToday(draft.actualEndDate),
     };
     void updateGoal(goalId, payload)
       .then((updated) => {
@@ -630,6 +651,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
             repeatPeriod: updated.repeatPeriod,
             plannedDays: updated.plannedDays,
             actualStartDate: updated.actualStartDate,
+            actualEndDate: updated.actualEndDate,
             targetStartDate: updated.targetStartDate,
             targetEndDate: updated.targetEndDate,
           };
@@ -710,43 +732,123 @@ export default function StepDetailScreen({ navigation, route }: Props) {
       ? `Target per ${periodWord(repeatPeriod)}`
       : `Times per ${periodWord(repeatPeriod)}`;
 
-  const cycleStatus = () => {
-    if (!node || skipPersistRef.current) {
+  const applySavedStatus = (updated: Goal, scope: 'self' | 'child') => {
+    if (scope === 'self') {
+      setNode(updated);
+      setActualStartDate((current) => current.trim() || updated.actualStartDate || '');
+      const end = updated.actualEndDate ?? '';
+      setActualEndDate(end);
+      draftRef.current = { ...draftRef.current, actualEndDate: end };
       return;
     }
-    const next = nextGoalStatus(node.status);
-    setNode({ ...node, status: next });
-    void setGoalStatus(goalId, next)
-      .then((updated) => {
-        setNode(updated);
-        setActualStartDate((current) => current.trim() || updated.actualStartDate || '');
-      })
+    setChildren((current) =>
+      current.map((item) => (item.id === updated.id ? updated : item)),
+    );
+    setAllNodes((current) =>
+      current.map((item) => (item.id === updated.id ? updated : item)),
+    );
+  };
+
+  const saveStatus = (
+    id: string,
+    status: GoalStatus,
+    scope: 'self' | 'child',
+    endDate?: string,
+  ) => {
+    void setGoalStatus(id, status, endDate)
+      .then((updated) => applySavedStatus(updated, scope))
       .catch((error) => {
         console.warn('Failed to update status', error);
         void load();
       });
   };
 
+  const cycleStatus = () => {
+    if (!node || skipPersistRef.current) {
+      return;
+    }
+    const next = nextGoalStatus(node.status);
+    if (next === 'done') {
+      setDonePrompt({
+        id: goalId,
+        scope: 'self',
+        initialDate: actualEndDate.trim() || today,
+        minimumDate: actualStartDate.trim() || null,
+      });
+      return;
+    }
+    setActualEndDate('');
+    draftRef.current = { ...draftRef.current, actualEndDate: '' };
+    setNode({
+      ...node,
+      status: next,
+      actualEndDate: null,
+    });
+    saveStatus(goalId, next, 'self');
+  };
+
   const cycleChildStatus = (child: Goal) => {
     const next = nextGoalStatus(child.status);
-    setChildren((current) =>
-      current.map((item) =>
-        item.id === child.id ? { ...item, status: next } : item,
-      ),
-    );
-    void setGoalStatus(child.id, next)
-      .then((updated) => {
-        setChildren((current) =>
-          current.map((item) => (item.id === updated.id ? updated : item)),
-        );
-        setAllNodes((current) =>
-          current.map((item) => (item.id === updated.id ? updated : item)),
-        );
-      })
-      .catch((error) => {
-        console.warn('Failed to update step status', error);
-        void load();
+    if (next === 'done') {
+      setDonePrompt({
+        id: child.id,
+        scope: 'child',
+        initialDate: child.actualEndDate ?? today,
+        minimumDate: child.actualStartDate,
       });
+      return;
+    }
+    const clearEnd = (item: Goal): Goal =>
+      item.id === child.id ? { ...item, status: next, actualEndDate: null } : item;
+    setChildren((current) => current.map(clearEnd));
+    setAllNodes((current) => current.map(clearEnd));
+    saveStatus(child.id, next, 'child');
+  };
+
+  const confirmDoneDate = (isoDate: string) => {
+    const prompt = donePrompt;
+    setDonePrompt(null);
+    if (!prompt || !node || skipPersistRef.current) {
+      return;
+    }
+    const date = cappedToToday(isoDate) ?? today;
+    if (prompt.scope === 'self') {
+      setActualEndDate(date);
+      draftRef.current = { ...draftRef.current, actualEndDate: date };
+      setNode({
+        ...node,
+        status: 'done',
+        actualEndDate: date,
+      });
+    } else {
+      const markDone = (item: Goal): Goal =>
+        item.id === prompt.id
+          ? { ...item, status: 'done', actualEndDate: date }
+          : item;
+      setChildren((current) => current.map(markDone));
+      setAllNodes((current) => current.map(markDone));
+    }
+    saveStatus(prompt.id, 'done', prompt.scope, date);
+  };
+
+  const cancelDoneDate = () => {
+    const prompt = donePrompt;
+    setDonePrompt(null);
+    if (!prompt || !node) {
+      return;
+    }
+    if (prompt.scope === 'self') {
+      setActualEndDate('');
+      draftRef.current = { ...draftRef.current, actualEndDate: '' };
+      setNode({ ...node, status: 'active', actualEndDate: null });
+      return;
+    }
+    const keepActive = (item: Goal): Goal =>
+      item.id === prompt.id
+        ? { ...item, status: 'active', actualEndDate: null }
+        : item;
+    setChildren((current) => current.map(keepActive));
+    setAllNodes((current) => current.map(keepActive));
   };
 
   const openChild = (childId: string) => {
@@ -937,14 +1039,34 @@ export default function StepDetailScreen({ navigation, route }: Props) {
               label="Started"
               labelWidth={118}
               value={actualStartDate}
-              maximumDate={dateFromIso(today)}
+              maximumDate={dateFromIso(
+                actualEndDate.trim() && actualEndDate.trim() < today
+                  ? actualEndDate.trim()
+                  : today,
+              )}
               onChange={setActualStartDate}
             />
-            <FormFieldRow label="Actual end" labelWidth={118}>
-              <Text style={formFieldStyles.formReadOnlyValue}>
-                {node.actualEndDate ? formatDateMDY(node.actualEndDate) : '—'}
-              </Text>
-            </FormFieldRow>
+            {node.status === 'done' ? (
+              <FormDateRow
+                label="Actual end"
+                labelWidth={118}
+                value={actualEndDate}
+                minimumDate={
+                  actualStartDate.trim()
+                    ? dateFromIso(actualStartDate.trim())
+                    : undefined
+                }
+                maximumDate={dateFromIso(today)}
+                onChange={setActualEndDate}
+              />
+            ) : (
+              <FormFieldRow label="Actual end" labelWidth={118}>
+                <View>
+                  <Text style={styles.lockedDate}>—</Text>
+                  <Text style={styles.lockedDateCaption}>Set when marked done</Text>
+                </View>
+              </FormFieldRow>
+            )}
             <FormDateRow
               label="Target start"
               labelWidth={118}
@@ -1263,6 +1385,18 @@ export default function StepDetailScreen({ navigation, route }: Props) {
           </Text>
         </Pressable>
       </ScrollView>
+      {donePrompt ? (
+        <DatePickerModal
+          title="Actual end"
+          value={dateFromIso(donePrompt.initialDate)}
+          minimumDate={
+            donePrompt.minimumDate ? dateFromIso(donePrompt.minimumDate) : undefined
+          }
+          maximumDate={dateFromIso(today)}
+          onCancel={cancelDoneDate}
+          onConfirm={(date) => confirmDoneDate(isoFromDate(date))}
+        />
+      ) : null}
     </KeyboardSafe>
   );
 }
@@ -1344,6 +1478,16 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#111',
     textTransform: 'capitalize',
+  },
+  lockedDate: {
+    fontSize: 15,
+    color: '#C7C7CC',
+    paddingVertical: 10,
+  },
+  lockedDateCaption: {
+    fontSize: 12,
+    color: '#C7C7CC',
+    marginTop: -6,
   },
   switchRow: {
     flexDirection: 'row',

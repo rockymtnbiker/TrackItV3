@@ -1,11 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
-import DateTimePicker, {
-  type DateTimePickerEvent,
-} from '@react-native-community/datetimepicker';
 import { useState, type ReactNode } from 'react';
 import {
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,12 +9,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import {
-  dateFromIso,
-  formatDateMDY,
-  isoFromDate,
-  todayDateString,
-} from '../utils/date';
+import { DatePickerModal } from './DatePickerModal';
+import { dateFromIso, formatDateMDY, isoFromDate } from '../utils/date';
 
 export function FormFieldRow({
   label,
@@ -124,31 +116,17 @@ export function FormDateRow({
   value,
   onChange,
   labelWidth,
+  minimumDate,
   maximumDate,
 }: {
   label: string;
   value: string;
   onChange: (isoDate: string) => void;
   labelWidth?: number;
+  minimumDate?: Date;
   maximumDate?: Date;
 }) {
   const [open, setOpen] = useState(false);
-  const parsed = dateFromIso(value || todayDateString());
-  const pickerValue =
-    maximumDate && parsed.getTime() > maximumDate.getTime() ? maximumDate : parsed;
-
-  const handleChange = (event: DateTimePickerEvent, date?: Date) => {
-    if (Platform.OS === 'android') {
-      setOpen(false);
-    }
-    if (event.type === 'dismissed') {
-      setOpen(false);
-      return;
-    }
-    if (date) {
-      onChange(isoFromDate(date));
-    }
-  };
 
   return (
     <>
@@ -172,43 +150,19 @@ export function FormDateRow({
         </Pressable>
       </FormFieldRow>
 
-      {open && Platform.OS === 'android' ? (
-        <DateTimePicker
-          value={pickerValue}
-          mode="date"
-          display="default"
+      {open ? (
+        <DatePickerModal
+          title={label}
+          value={value ? dateFromIso(value) : null}
+          minimumDate={minimumDate}
           maximumDate={maximumDate}
-          onChange={handleChange}
+          onCancel={() => setOpen(false)}
+          onConfirm={(date) => {
+            onChange(isoFromDate(date));
+            setOpen(false);
+          }}
         />
       ) : null}
-
-      <Modal
-        visible={open && Platform.OS === 'ios'}
-        animationType="fade"
-        transparent
-        onRequestClose={() => setOpen(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.menuCard}>
-            <Text style={styles.modalTitle}>{label}</Text>
-            <DateTimePicker
-              value={pickerValue}
-              mode="date"
-              display="spinner"
-              maximumDate={maximumDate}
-              onChange={handleChange}
-            />
-            <View style={styles.modalActions}>
-              <Pressable
-                onPress={() => setOpen(false)}
-                style={styles.modalButtonPrimary}
-              >
-                <Text style={styles.modalButtonPrimaryText}>Done</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
     </>
   );
 }
