@@ -1,29 +1,86 @@
 import type { GoalEntry, Goal, RepeatPeriod } from '../types/goal';
-import { addDays, getWeekStart, parseDateString, toDateString } from '../utils/date';
+import { addDays, getWeekStart, parseDateString, toDateString, todayDateString } from '../utils/date';
 
 export type PeriodRange = {
   start: string;
   end: string;
 };
 
+function daysInMonth(date: string): number {
+  const parsed = parseDateString(date.slice(0, 10));
+  return new Date(parsed.getFullYear(), parsed.getMonth() + 1, 0).getDate();
+}
+
 /** Week is Sunday–Saturday. Month is the calendar month containing the date. */
 export function getPeriodRange(
   date: string,
   repeatPeriod: RepeatPeriod,
 ): PeriodRange {
+  const day = date.slice(0, 10);
   if (repeatPeriod === 'month') {
-    const parsed = parseDateString(date);
+    const parsed = parseDateString(day);
     const year = parsed.getFullYear();
     const monthIndex = parsed.getMonth();
-    const lastDay = new Date(year, monthIndex + 1, 0).getDate();
+    const lastDay = daysInMonth(day);
     return {
       start: toDateString(year, monthIndex, 1),
       end: toDateString(year, monthIndex, lastDay),
     };
   }
 
-  const start = getWeekStart(date);
+  const start = getWeekStart(day);
   return { start, end: addDays(start, 6) };
+}
+
+/** The period that contains D: Sun–Sat, or the calendar month. */
+export function periodBounds(node: Goal, date: string): PeriodRange {
+  return getPeriodRange(date, node.repeatPeriod ?? 'week');
+}
+
+const ALL_WEEKDAYS = [0, 1, 2, 3, 4, 5, 6];
+
+/**
+ * A weekly step shown as Daily: every weekday is planned, and a yes/no step
+ * has no target or a target of 7. Display only; period math stays weekly.
+ */
+export function isDaily(goal: Pick<Goal, 'repeatPeriod' | 'plannedDays' | 'unit' | 'targetAmount'>): boolean {
+  if (goal.repeatPeriod !== 'week' || goal.plannedDays == null) {
+    return false;
+  }
+  const selected = new Set(goal.plannedDays);
+  if (!ALL_WEEKDAYS.every((day) => selected.has(day))) {
+    return false;
+  }
+  return goal.unit != null || goal.targetAmount == null || goal.targetAmount === 7;
+}
+
+/**
+ * This step's target expressed as a weekly amount.
+ * Weekly yes/no is the target, or the planned-day count (at least 1).
+ * Monthly stays target × 7 / days in that month.
+ * Tracked steps still use target_amount, and return nothing when it is unset.
+ */
+export function weeklyTarget(goal: Goal, weekStart?: string): number | null {
+  const tracked = goal.unit != null;
+  const positive =
+    goal.targetAmount != null && goal.targetAmount > 0 ? goal.targetAmount : null;
+
+  if (goal.repeatPeriod === 'month') {
+    if (goal.targetAmount == null) {
+      return null;
+    }
+    const anchor = getWeekStart(weekStart?.slice(0, 10) ?? todayDateString());
+    return (goal.targetAmount * 7) / daysInMonth(anchor);
+  }
+
+  if (tracked) {
+    return goal.targetAmount;
+  }
+  if (positive != null) {
+    return positive;
+  }
+  const planned = goal.plannedDays?.length ?? 0;
+  return planned > 0 ? planned : 1;
 }
 
 /**
@@ -35,7 +92,7 @@ export function periodTotal(
   entries: GoalEntry[],
   date: string,
 ): number {
-  const range = getPeriodRange(date, node.repeatPeriod ?? 'week');
+  const range = periodBounds(node, date);
   const own = entries.filter(
     (entry) =>
       entry.goalId === node.id &&
@@ -60,6 +117,11 @@ export function isPeriodTargetMet(
     return false;
   }
   return periodTotal(node, entries, date) >= node.targetAmount;
+}
+
+/** Actual start date, or the created date when that is unset. Date only. */
+export function goalStartDate(node: Goal): string {
+  return (node.actualStartDate ?? node.createdDate).slice(0, 10);
 }
 
 /** Repeating steps store planned days. An empty array still repeats. */
@@ -197,7 +259,7 @@ export function paceInfo(
   total: number,
   today: string,
 ): PaceInfo | null {
-  const start = (node.actualStartDate ?? node.createdDate).slice(0, 10);
+  const start = goalStartDate(node);
   const deadline = node.targetEndDate?.slice(0, 10) || null;
   if (node.targetAmount == null || !deadline || deadline <= start) {
     return null;

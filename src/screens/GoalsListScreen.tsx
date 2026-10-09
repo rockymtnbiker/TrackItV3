@@ -22,9 +22,11 @@ import {
 } from '../lib/goalTreeApi';
 import {
   buildChildrenMap,
+  isDaily,
   isRepeating,
   isTracked,
   rollupTotal,
+  weeklyTarget,
 } from '../lib/goalTree';
 import type { GoalsStackParamList } from '../navigation/GoalsStackNavigator';
 import type { GoalEntry, Goal } from '../types/goal';
@@ -41,10 +43,20 @@ function cardSubtitle(
   childrenMap: Map<string | null, Goal[]>,
 ): string {
   if (isRepeating(node)) {
-    const amount = node.targetAmount != null ? String(node.targetAmount) : '—';
     const unit = node.unit ?? 'times';
-    const period = node.repeatPeriod === 'month' ? 'month' : 'week';
-    return `${amount} ${unit} / ${period}`;
+    if (node.repeatPeriod === 'month') {
+      const amount = node.targetAmount != null ? String(node.targetAmount) : '—';
+      return `${amount} ${unit} / month`;
+    }
+    const weekly = weeklyTarget(node);
+    const amount =
+      weekly == null
+        ? '—'
+        : Number.isInteger(weekly)
+          ? String(weekly)
+          : String(Math.round(weekly * 100) / 100);
+    const cadence = isDaily(node) ? 'Daily' : 'Weekly';
+    return `${amount} ${unit} / week · ${cadence}`;
   }
 
   if (isTracked(node)) {

@@ -23,6 +23,7 @@ type GoalRow = {
   target_end_date: string | null;
   actual_start_date: string | null;
   actual_end_date: string | null;
+  completed_on: string | null;
   created_date: string | null;
   deleted_at: string | null;
   unit: string | null;
@@ -80,6 +81,9 @@ function mapRepeatPeriod(
   value: string | null | undefined,
 ): RepeatPeriod | null {
   const period = value?.toLowerCase();
+  if (period === 'day') {
+    return 'week';
+  }
   if (period === 'week' || period === 'month') {
     return period;
   }
@@ -105,6 +109,7 @@ function mapRowToNode(row: GoalRow): Goal {
     targetEndDate: dateOrNull(row.target_end_date),
     actualStartDate: dateOrNull(row.actual_start_date),
     actualEndDate: dateOrNull(row.actual_end_date),
+    completedOn: dateOrNull(row.completed_on),
     createdDate: (row.created_date ?? '').slice(0, 10),
     unit: row.unit,
     targetAmount: amountToNumber(row.target_amount) ?? null,
@@ -134,9 +139,7 @@ function normalizeRepeat(
     return { repeat_period: null, planned_days: null };
   }
   if (repeatPeriod == null) {
-    throw new Error(
-      'A repeating step needs a repeat period of week or month.',
-    );
+    throw new Error('A repeating step needs a repeat period of week or month.');
   }
   return {
     repeat_period: repeatPeriod,
@@ -387,9 +390,19 @@ export async function updateGoal(
   return mapRowToNode(data as GoalRow);
 }
 
+/** Local calendar date (YYYY-MM-DD), or today when the caller omits one. */
+function completedOnDate(value: string | undefined): string {
+  const date = dateOrNull(value);
+  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return date;
+  }
+  return todayDateString();
+}
+
 export async function setGoalStatus(
   id: string,
   status: GoalStatus,
+  completedOn?: string,
 ): Promise<Goal> {
   const userId = await requireUserId();
   const existing = await fetchNodeRow(id, userId);
@@ -397,7 +410,26 @@ export async function setGoalStatus(
     throw new Error('Step not found.');
   }
 
-  const updates = captureStatusDates(status, existing, todayDateString());
+  const today = todayDateString();
+  const updates = captureStatusDates(status, existing, today);
+  const fillStart = updates.actual_start_date ?? null;
+  delete updates.actual_start_date;
+  updates.completed_on =
+    status === 'done' ? completedOnDate(completedOn) : null;
+
+  if (fillStart) {
+    const { error: startError } = await supabase
+      .from(GOALS_TABLE)
+      .update({ actual_start_date: fillStart })
+      .eq('id', id)
+      .eq('user_id', userId)
+      .is('deleted_at', null)
+      .is('actual_start_date', null);
+
+    if (startError) {
+      throw startError;
+    }
+  }
 
   const { data, error } = await supabase
     .from(GOALS_TABLE)

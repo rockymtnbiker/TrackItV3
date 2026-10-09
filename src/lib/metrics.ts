@@ -1,6 +1,8 @@
 import type { GoalEntry, Goal } from '../types/goal';
-import { addDays, getWeekStart, parseDateString, toDateString } from '../utils/date';
-import { buildChildrenMap, isRepeating } from './goalTree';
+import { addDays, parseDateString, toDateString } from '../utils/date';
+import { buildChildrenMap, isRepeating, weeklyTarget as goalWeeklyTarget } from './goalTree';
+
+export { goalStartDate } from './goalTree';
 
 function calendarDaysBetween(start: string, end: string): number {
   const ms =
@@ -93,21 +95,18 @@ export function dailyAmounts(
 
 /**
  * Weekly plan for the Sunday–Saturday week starting at weekStart.
+ * Each repeating step contributes weeklyTarget from goalTree.
  * Month goals contribute targetAmount * 7 / days in the week-start month.
  */
 export function weeklyTarget(sources: Goal[], weekStart: string): number {
-  const days = monthOf(getWeekStart(weekStart)).days;
   let total = 0;
 
   for (const source of sources) {
-    if (source.targetAmount == null) {
+    const amount = goalWeeklyTarget(source, weekStart);
+    if (amount == null) {
       continue;
     }
-    if (source.repeatPeriod === 'week') {
-      total += source.targetAmount;
-    } else if (source.repeatPeriod === 'month') {
-      total += (source.targetAmount * 7) / days;
-    }
+    total += amount;
   }
 
   return total;
@@ -132,14 +131,18 @@ export function monthlyPlanned(
   let total = 0;
 
   for (const source of sources) {
-    if (source.targetAmount == null) {
+    if (source.repeatPeriod === 'month') {
+      if (source.targetAmount == null) {
+        continue;
+      }
+      total += (source.targetAmount * days) / bounds.days;
       continue;
     }
-    if (source.repeatPeriod === 'week') {
-      total += (source.targetAmount * days) / 7;
-    } else if (source.repeatPeriod === 'month') {
-      total += (source.targetAmount * days) / bounds.days;
+    const amount = goalWeeklyTarget(source, bounds.start);
+    if (amount == null) {
+      continue;
     }
+    total += (amount * days) / 7;
   }
 
   return total;

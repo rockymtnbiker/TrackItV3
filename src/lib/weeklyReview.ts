@@ -1,6 +1,6 @@
 import type { Goal, GoalEntry } from '../types/goal';
 import { addDays, getWeekStart, parseDateString } from '../utils/date';
-import { buildChildrenMap, isLeaf, isRepeating, isTracked, periodTotal } from './goalTree';
+import { buildChildrenMap, isLeaf, isRepeating, isTracked, periodTotal, weeklyTarget } from './goalTree';
 
 export type WeeklyItem = {
   goalId: string;
@@ -87,7 +87,7 @@ export function getWeeklyItems(
 
     if (isRepeating(goal) && goal.repeatPeriod === 'week') {
       const total = periodTotal(goal, visibleEntries, start);
-      const target = goal.targetAmount;
+      const target = weeklyTarget(goal, start);
       const partial = target != null && target > 0 ? Math.min(total / target, 1) : 0;
       items.push({
         goalId: goal.id,
@@ -148,7 +148,8 @@ const WEEK_STREAK_DONE = 0.8;
 export function getWeekStreak(goals: Goal[], entries: GoalEntry[], today: Date): number {
   // TODO: one-time steps need completed_at for history
   const repeatingGoals = goals.filter(
-    (goal) => isRepeating(goal) && goal.repeatPeriod === 'week',
+    (goal) =>
+      isRepeating(goal) && goal.repeatPeriod === 'week',
   );
   const currentWeekStart = getWeekStart(localDateString(today));
   let streak = 0;
@@ -233,11 +234,12 @@ export function getAtRiskItems(
     }
 
     if (isRepeating(goal) && goal.repeatPeriod === 'week') {
-      const target = goal.targetAmount;
+      const target = weeklyTarget(goal, weekStart);
       if (target == null || target <= 0 || daysLeft <= 0) {
         continue;
       }
-      const remaining = target - periodTotal(goal, visibleEntries, todayString);
+      const logged = periodTotal(goal, visibleEntries, todayString);
+      const remaining = target - logged;
       if (remaining <= 0) {
         continue;
       }

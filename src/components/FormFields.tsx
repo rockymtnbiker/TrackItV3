@@ -124,14 +124,18 @@ export function FormDateRow({
   value,
   onChange,
   labelWidth,
+  maximumDate,
 }: {
   label: string;
   value: string;
   onChange: (isoDate: string) => void;
   labelWidth?: number;
+  maximumDate?: Date;
 }) {
   const [open, setOpen] = useState(false);
-  const pickerValue = dateFromIso(value || todayDateString());
+  const parsed = dateFromIso(value || todayDateString());
+  const pickerValue =
+    maximumDate && parsed.getTime() > maximumDate.getTime() ? maximumDate : parsed;
 
   const handleChange = (event: DateTimePickerEvent, date?: Date) => {
     if (Platform.OS === 'android') {
@@ -173,6 +177,7 @@ export function FormDateRow({
           value={pickerValue}
           mode="date"
           display="default"
+          maximumDate={maximumDate}
           onChange={handleChange}
         />
       ) : null}
@@ -190,6 +195,7 @@ export function FormDateRow({
               value={pickerValue}
               mode="date"
               display="spinner"
+              maximumDate={maximumDate}
               onChange={handleChange}
             />
             <View style={styles.modalActions}>

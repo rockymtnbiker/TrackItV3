@@ -39,6 +39,7 @@ import {
 } from '../lib/goalTreeApi';
 import {
   buildChildrenMap,
+  isDaily,
   paceInfo,
   periodTotal,
   rollupTotal,
@@ -46,6 +47,7 @@ import {
 import {
   buildProgressSeries,
   dailyAmounts,
+  goalStartDate,
   monthlyPlanned,
   planSources,
   weeklyTarget,
@@ -60,6 +62,7 @@ import type {
 import { nextGoalStatus } from '../types';
 import {
   addDays,
+  dateFromIso,
   formatDateMDY,
   getWeekStart,
   parseDateString,
@@ -85,9 +88,12 @@ const UNIT_CHOICES = [
   { value: CUSTOM_UNIT, label: 'Custom…' },
 ];
 
+const ALL_PLANNED_DAYS = [0, 1, 2, 3, 4, 5, 6];
+
 const PERIOD_CHOICES = [
-  { value: 'week', label: 'Week' },
-  { value: 'month', label: 'Month' },
+  { value: 'daily', label: 'Daily' },
+  { value: 'week', label: 'Weekly' },
+  { value: 'month', label: 'Monthly' },
 ];
 
 function isPresetUnit(unit: string): boolean {
@@ -148,10 +154,6 @@ function subtreeIds(rootId: string, nodes: Goal[]): string[] {
 
 function descendantCount(rootId: string, nodes: Goal[]): number {
   return Math.max(0, subtreeIds(rootId, nodes).length - 1);
-}
-
-function metricStartDate(node: Goal): string {
-  return (node.actualStartDate ?? node.createdDate).slice(0, 10);
 }
 
 function formatMetricAmount(value: number): string {
@@ -221,7 +223,7 @@ function MetricsSections({
   }
 
   const today = todayDateString();
-  const startDate = metricStartDate(node);
+  const startDate = goalStartDate(node);
   const currentWeek = getWeekStart(today);
   const startWeek = getWeekStart(startDate);
   const historyWeeks =
@@ -473,6 +475,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
   const [repeatOn, setRepeatOn] = useState(false);
   const [repeatPeriod, setRepeatPeriod] = useState<RepeatPeriod>('week');
   const [plannedDays, setPlannedDays] = useState<number[]>([]);
+  const [actualStartDate, setActualStartDate] = useState('');
   const [targetStartDate, setTargetStartDate] = useState('');
   const [targetEndDate, setTargetEndDate] = useState('');
   const [newStepTitle, setNewStepTitle] = useState('');
@@ -501,6 +504,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
     setRepeatOn(next.plannedDays != null);
     setRepeatPeriod(next.repeatPeriod ?? 'week');
     setPlannedDays(next.plannedDays ?? []);
+    setActualStartDate(next.actualStartDate ?? '');
     setTargetStartDate(next.targetStartDate ?? '');
     setTargetEndDate(next.targetEndDate ?? '');
   }, []);
@@ -545,6 +549,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
     repeatOn,
     repeatPeriod,
     plannedDays,
+    actualStartDate,
     targetStartDate,
     targetEndDate,
   });
@@ -558,6 +563,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
     repeatOn,
     repeatPeriod,
     plannedDays,
+    actualStartDate,
     targetStartDate,
     targetEndDate,
   };
@@ -591,18 +597,43 @@ export default function StepDetailScreen({ navigation, route }: Props) {
     const amount =
       !draft.trackOn && !draft.repeatOn ? null : parseAmount(draft.target);
 
-    void updateGoal(goalId, {
+    const payload = {
       title: trimmedTitle,
       description: draft.description.trim() || null,
       unit,
       targetAmount: amount,
       repeatPeriod: draft.repeatOn ? draft.repeatPeriod : null,
       plannedDays: draft.repeatOn ? draft.plannedDays : null,
+      ...(draft.actualStartDate.trim()
+        ? {
+            actualStartDate:
+              draft.actualStartDate.trim() > todayDateString()
+                ? todayDateString()
+                : draft.actualStartDate.trim(),
+          }
+        : {}),
       targetStartDate: draft.targetStartDate.trim() || null,
       targetEndDate: draft.targetEndDate.trim() || null,
-    })
+    };
+    void updateGoal(goalId, payload)
       .then((updated) => {
-        setNode(updated);
+        setNode((current) => {
+          if (current == null || current.id !== updated.id) {
+            return current;
+          }
+          return {
+            ...current,
+            title: updated.title,
+            description: updated.description,
+            unit: updated.unit,
+            targetAmount: updated.targetAmount,
+            repeatPeriod: updated.repeatPeriod,
+            plannedDays: updated.plannedDays,
+            actualStartDate: updated.actualStartDate,
+            targetStartDate: updated.targetStartDate,
+            targetEndDate: updated.targetEndDate,
+          };
+        });
       })
       .catch((error) => {
         console.warn('Failed to save step', error);
@@ -646,6 +677,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
         targetAmount: parseAmount(target),
         repeatPeriod: repeatOn ? repeatPeriod : null,
         plannedDays: repeatOn ? plannedDays : null,
+        actualStartDate: actualStartDate.trim() || null,
         targetEndDate: targetEndDate.trim() || null,
       }
     : null;
@@ -665,6 +697,13 @@ export default function StepDetailScreen({ navigation, route }: Props) {
     (child) => child.status === 'active',
   ).length;
 
+  const showingDaily = isDaily({
+    repeatPeriod: repeatPeriod === 'month' ? 'month' : 'week',
+    plannedDays,
+    unit: trackOn ? displayUnit : null,
+    targetAmount: parseAmount(target),
+  });
+  const periodChoice = repeatPeriod === 'month' ? 'month' : showingDaily ? 'daily' : 'week';
   const targetLabel = !repeatOn
     ? 'Total target'
     : trackOn
@@ -680,6 +719,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
     void setGoalStatus(goalId, next)
       .then((updated) => {
         setNode(updated);
+        setActualStartDate((current) => current.trim() || updated.actualStartDate || '');
       })
       .catch((error) => {
         console.warn('Failed to update status', error);
@@ -802,11 +842,14 @@ export default function StepDetailScreen({ navigation, route }: Props) {
   };
 
   const togglePlannedDay = (day: number) => {
-    setPlannedDays((current) =>
-      current.includes(day)
-        ? current.filter((entry) => entry !== day)
-        : [...current, day].sort((a, b) => a - b),
-    );
+    const next = plannedDays.includes(day)
+      ? plannedDays.filter((entry) => entry !== day)
+      : [...plannedDays, day].sort((a, b) => a - b);
+    setPlannedDays(next);
+    const allSelected = ALL_PLANNED_DAYS.every((value) => next.includes(value));
+    if (allSelected && !trackOn && repeatPeriod !== 'month') {
+      setTarget('');
+    }
   };
 
   if (loading && !node) {
@@ -890,13 +933,13 @@ export default function StepDetailScreen({ navigation, route }: Props) {
                 <Text style={styles.statusWord}>{node.status}</Text>
               </View>
             </FormFieldRow>
-            <FormFieldRow label="Actual start" labelWidth={118}>
-              <Text style={formFieldStyles.formReadOnlyValue}>
-                {node.actualStartDate
-                  ? formatDateMDY(node.actualStartDate)
-                  : '—'}
-              </Text>
-            </FormFieldRow>
+            <FormDateRow
+              label="Started"
+              labelWidth={118}
+              value={actualStartDate}
+              maximumDate={dateFromIso(today)}
+              onChange={setActualStartDate}
+            />
             <FormFieldRow label="Actual end" labelWidth={118}>
               <Text style={formFieldStyles.formReadOnlyValue}>
                 {node.actualEndDate ? formatDateMDY(node.actualEndDate) : '—'}
@@ -984,12 +1027,22 @@ export default function StepDetailScreen({ navigation, route }: Props) {
               <>
                 <FormSelectRow
                   label="Period"
-                  value={repeatPeriod}
-                  placeholder="Week"
+                  value={periodChoice}
+                  placeholder="Weekly"
                   options={PERIOD_CHOICES}
-                  onChange={(value) =>
-                    setRepeatPeriod(value === 'month' ? 'month' : 'week')
-                  }
+                  onChange={(value) => {
+                    if (value === 'month') {
+                      setRepeatPeriod('month');
+                      return;
+                    }
+                    setRepeatPeriod('week');
+                    if (value === 'daily') {
+                      setPlannedDays(ALL_PLANNED_DAYS);
+                      if (!trackOn) {
+                        setTarget('');
+                      }
+                    }
+                  }}
                 />
                 <View style={styles.formStackedBlock}>
                   <Text style={formFieldStyles.formFieldLabel}>Days</Text>
@@ -1030,9 +1083,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
           <View style={styles.progressCard}>
             <Text style={styles.progress}>
               {total ?? 0} / {progressNode.targetAmount ?? '—'} {displayUnit}
-              {repeatOn
-                ? ` this ${periodWord(repeatPeriod)}`
-                : ''}
+              {repeatOn ? ` this ${periodWord(repeatPeriod)}` : ''}
             </Text>
             <View style={styles.barTrack}>
               <View
@@ -1074,8 +1125,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
                     progressNode.targetEndDate,
                     today,
                   ),
-                  startDate:
-                    progressNode.actualStartDate ?? progressNode.createdDate,
+                  startDate: goalStartDate(progressNode),
                   endDate: progressNode.targetEndDate,
                   target: progressNode.targetAmount,
                   today,

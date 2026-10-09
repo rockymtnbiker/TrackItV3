@@ -15,6 +15,7 @@ export type Goal = {
   targetEndDate: string | null;
   actualStartDate: string | null;
   actualEndDate: string | null;
+  completedOn: string | null;
   createdDate: string;
   unit: string | null;
   targetAmount: number | null;
