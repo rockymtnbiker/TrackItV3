@@ -8,6 +8,7 @@ export type Goal = {
   parentId: string | null;
   title: string;
   description: string | null;
+  why: string | null;
   category: string | null;
   sortOrder: number;
   status: GoalStatus;

@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, type NavigationProp } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -10,17 +10,23 @@ import {
   Text,
   View,
 } from 'react-native';
-import Svg, { Circle } from 'react-native-svg';
+import Svg, { Circle, Path } from 'react-native-svg';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../context/AuthContext';
+import { entriesOnOrBefore, periodTotalAsOf, weeklyTarget } from '../lib/asOfDate';
+import {
+  bigDealSummary,
+  goalAnalysis,
+  goalStreaks,
+  type AnalysisTone,
+} from '../lib/goalAnalysis';
 import {
   buildChildrenMap,
-  completionDates,
+  goalStartDate,
   isLeaf,
   isRepeating,
   isTracked,
   paceInfo,
-  periodTotal,
   rollupTotal,
 } from '../lib/goalTree';
 import {
@@ -31,18 +37,21 @@ import {
   type WeeklyReview,
 } from '../lib/weeklyReview';
 import { getAllGoals, getEntries } from '../lib/goalTreeApi';
-import type { DashboardStackParamList } from '../navigation/TabNavigator';
+import type { DashboardStackParamList, RootTabParamList } from '../navigation/TabNavigator';
 import type { GoalEntry, Goal } from '../types/goal';
 import {
   addDays,
   formatDateMDY,
   formatShortDate,
+  getWeekDays,
+  getWeekday,
   getWeekStart,
   parseDateString,
   toDateString,
   todayDateString,
+  WEEKDAY_SHORT_LABELS,
 } from '../utils/date';
-import { calculateStreak, STREAK_LOOKBACK_DAYS } from '../utils/streak';
+import { STREAK_LOOKBACK_DAYS } from '../utils/streak';
 
 type Props = NativeStackScreenProps<DashboardStackParamList, 'DashboardMain'>;
 
@@ -53,14 +62,6 @@ const DASHBOARD_PERIODS: { id: DashboardPeriod; label: string }[] = [
   { id: 'weekly', label: 'Weekly' },
   { id: 'monthly', label: 'Monthly' },
 ];
-
-function ProgressBar({ percent }: { percent: number }) {
-  return (
-    <View style={styles.progressTrack}>
-      <View style={[styles.progressFill, { width: `${percent}%` }]} />
-    </View>
-  );
-}
 
 const DONUT_SIZE = 148;
 const DONUT_STROKE = 14;
@@ -168,6 +169,14 @@ function WeekTiles({
 
 const DAY_LETTERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
+const TONE_COLOR: Record<AnalysisTone, string> = {
+  good: '#248A3D',
+  warn: '#C2410C',
+  neutral: '#1C1C1E',
+};
+
+const WIN_LIMIT = 5;
+
 function DaysActiveCard({
   weekStart,
   today,
@@ -214,48 +223,66 @@ function DaysActiveCard({
 
 function NeedsAttentionCard({
   items,
+  nodes,
   onPress,
 }: {
   items: AtRiskItem[];
+  nodes: Goal[];
   onPress: (goalId: string) => void;
 }) {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
   return (
     <View style={styles.weeklyCard}>
       <Text style={styles.weeklyCardTitle}>Needs attention</Text>
       {items.length === 0 ? (
         <Text style={styles.weeklyEmpty}>Everything's on track.</Text>
       ) : (
-        items.map((item, index) => (
-          <Pressable
-            key={item.goalId}
-            onPress={() => onPress(item.goalId)}
-            style={({ pressed }) => [
-              styles.attentionRow,
-              index > 0 && styles.attentionRowBorder,
-              pressed && styles.pressed,
-            ]}
-            accessibilityRole="button"
-            accessibilityLabel={`Open ${item.title}`}
-          >
-            <View style={styles.attentionText}>
-              {item.parentTitle ? (
-                <Text style={styles.attentionParent}>{item.parentTitle}</Text>
-              ) : null}
-              <Text style={styles.attentionTitle}>{item.title}</Text>
-            </View>
-            <Text style={styles.attentionDetail}>{item.detail}</Text>
-          </Pressable>
-        ))
+        items.map((item, index) => {
+          const goal = byId.get(item.goalId);
+          const why = goal ? topLevelGoal(goal, byId).why?.trim() ?? '' : '';
+          return (
+            <Pressable
+              key={item.goalId}
+              onPress={() => onPress(item.goalId)}
+              style={({ pressed }) => [
+                styles.attentionRow,
+                index > 0 && styles.attentionRowBorder,
+                pressed && styles.pressed,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={`Open ${item.title}`}
+            >
+              <View style={styles.attentionText}>
+                {item.parentTitle ? (
+                  <Text style={styles.attentionParent}>{item.parentTitle}</Text>
+                ) : null}
+                <Text style={styles.attentionTitle}>{item.title}</Text>
+                {why ? (
+                  <Text style={styles.whyLine} numberOfLines={1}>
+                    {why}
+                  </Text>
+                ) : null}
+              </View>
+              <Text
+                style={[
+                  styles.attentionDetail,
+                  attentionWarn(item.detail) && styles.attentionWarn,
+                ]}
+              >
+                {item.detail}
+              </Text>
+              <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+            </Pressable>
+          );
+        })
       )}
     </View>
   );
 }
 
-function formatAmount(value: number): string {
-  if (Number.isInteger(value)) {
-    return String(value);
-  }
-  return String(Math.round(value * 100) / 100);
+function formatQty(value: number): string {
+  const rounded = Math.round(value * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded);
 }
 
 function barPercent(total: number, target: number | null): number {
@@ -292,89 +319,264 @@ function subtreeIds(rootId: string, nodes: Goal[]): string[] {
   return ids;
 }
 
-function ActiveGoalCard({
-  node,
-  nodes,
-  entries,
-  today,
-  childrenMap,
-  onPress,
-}: {
-  node: Goal;
-  nodes: Goal[];
-  entries: GoalEntry[];
-  today: string;
-  childrenMap: Map<string | null, Goal[]>;
-  onPress: () => void;
-}) {
-  const repeating = isRepeating(node);
-  const tracked = isTracked(node);
-  const children = childrenMap.get(node.id) ?? [];
-
-  let label: string | null = null;
-  let percent = 0;
-  let showBar = false;
-  let paceLine: string | null = null;
-  let paceBehind = false;
-  let streak: number | null = null;
-  let statusLabel: string | null = null;
-
-  if (tracked && !repeating) {
-    const total = rollupTotal(node, nodes, entries) ?? 0;
-    const target =
-      node.targetAmount != null ? formatAmount(node.targetAmount) : '—';
-    label = `${formatAmount(total)} / ${target} ${node.unit}`;
-    percent = barPercent(total, node.targetAmount);
-    showBar = true;
-    const pace = paceInfo(node, total, today);
-    if (pace) {
-      paceBehind = pace.delta < 0 && !pace.onPace;
-      paceLine = `${Math.round(pace.pctDone)}% done · ${Math.round(Math.abs(pace.delta))}% ${paceBehind ? 'behind' : 'ahead'}`;
+function topLevelGoal(goal: Goal, byId: Map<string, Goal>): Goal {
+  let current = goal;
+  const seen = new Set<string>();
+  while (current.parentId && !seen.has(current.id)) {
+    seen.add(current.id);
+    const parent = byId.get(current.parentId);
+    if (!parent) {
+      break;
     }
-  } else if (repeating) {
-    const total = periodTotal(node, entries, today);
-    const target =
-      node.targetAmount != null ? formatAmount(node.targetAmount) : '—';
-    const unit = node.unit ?? 'times';
-    const period = node.repeatPeriod === 'month' ? 'this month' : 'this week';
-    label = `${formatAmount(total)} / ${target} ${unit} ${period}`;
-    percent = barPercent(total, node.targetAmount);
-    showBar = true;
-    streak = calculateStreak(completionDates(node, entries), today);
-  } else if (children.length > 0) {
-    const doneCount = children.filter((child) => child.status === 'done').length;
-    const activeCount = children.filter((child) => child.status === 'active').length;
-    label = `${doneCount} done · ${activeCount} active`;
-  } else {
-    statusLabel = node.status;
+    current = parent;
+  }
+  return current;
+}
+
+function planOrder(nodes: Goal[], childrenMap: Map<string | null, Goal[]>): Goal[] {
+  const ordered: Goal[] = [];
+  const walk = (node: Goal) => {
+    ordered.push(node);
+    for (const child of childrenMap.get(node.id) ?? []) {
+      walk(child);
+    }
+  };
+  for (const root of childrenMap.get(null) ?? []) {
+    walk(root);
+  }
+  const seen = new Set(ordered.map((node) => node.id));
+  for (const node of nodes) {
+    if (!seen.has(node.id)) {
+      ordered.push(node);
+    }
+  }
+  return ordered;
+}
+
+function mergeEntries(groups: GoalEntry[][]): GoalEntry[] {
+  const byKey = new Map<string, GoalEntry>();
+  for (const group of groups) {
+    for (const entry of group) {
+      const date = entry.entryDate.slice(0, 10);
+      byKey.set(`${entry.goalId}:${date}`, { ...entry, entryDate: date });
+    }
+  }
+  return [...byKey.values()];
+}
+
+type WinRow = {
+  key: string;
+  goalId: string;
+  title: string;
+  parentTitle: string | null;
+  kind: 'done' | 'met' | 'streak';
+  detail: string;
+};
+
+function winsThisWeek(
+  nodes: Goal[],
+  entries: GoalEntry[],
+  today: string,
+  weekStart: string,
+): WinRow[] {
+  const childrenMap = buildChildrenMap(nodes);
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const weekEnd = addDays(weekStart, 6);
+  const wins: WinRow[] = [];
+
+  const parentTitle = (goal: Goal): string | null => {
+    if (goal.parentId == null) {
+      return null;
+    }
+    return byId.get(goal.parentId)?.title ?? null;
+  };
+
+  for (const goal of planOrder(nodes, childrenMap)) {
+    if (isRepeating(goal)) {
+      continue;
+    }
+    const completed = goal.actualEndDate?.slice(0, 10) || null;
+    if (completed == null || completed < weekStart || completed > weekEnd || completed > today) {
+      continue;
+    }
+    wins.push({
+      key: `done:${goal.id}`,
+      goalId: goal.id,
+      title: goal.title || 'Untitled',
+      parentTitle: parentTitle(goal),
+      kind: 'done',
+      detail: `Done ${WEEKDAY_SHORT_LABELS[getWeekday(completed)]}`,
+    });
   }
 
+  for (const goal of planOrder(nodes, childrenMap)) {
+    if (!isRepeating(goal)) {
+      continue;
+    }
+    const target = weeklyTarget(goal, weekStart);
+    if (target == null || target <= 0) {
+      continue;
+    }
+    const total = periodTotalAsOf(goal, entries, today);
+    if (total < target) {
+      continue;
+    }
+    wins.push({
+      key: `met:${goal.id}`,
+      goalId: goal.id,
+      title: goal.title || 'Untitled',
+      parentTitle: parentTitle(goal),
+      kind: 'met',
+      detail: `${formatQty(total)} of ${formatQty(target)} this week`,
+    });
+  }
+
+  for (const goal of planOrder(nodes, childrenMap)) {
+    if (!isRepeating(goal)) {
+      continue;
+    }
+    const streak = goalStreaks(goal, entries, today);
+    if (streak == null || streak.current < 3) {
+      continue;
+    }
+    wins.push({
+      key: `streak:${goal.id}`,
+      goalId: goal.id,
+      title: goal.title || 'Untitled',
+      parentTitle: parentTitle(goal),
+      kind: 'streak',
+      detail: `${streak.current}-${streak.unit} streak`,
+    });
+  }
+
+  return wins;
+}
+
+function FlameMark() {
   return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [styles.goalRow, pressed && styles.pressed]}
-      accessibilityRole="button"
-      accessibilityLabel={`Open ${node.title}`}
-    >
-      <View style={styles.goalHeader}>
-        <Text style={styles.goalTitle}>{node.title}</Text>
-        {streak != null ? (
-          <View style={styles.streakMeta}>
-            <Ionicons name="flame" size={16} color="#ff6b00" />
-            <Text style={styles.streakCount}>{streak}</Text>
-          </View>
-        ) : null}
-      </View>
-      {label ? <Text style={styles.progressRowLabel}>{label}</Text> : null}
-      {showBar ? <ProgressBar percent={percent} /> : null}
-      {paceLine ? (
-        <Text style={[styles.paceLine, paceBehind ? styles.paceBehind : styles.paceAhead]}>
-          {paceLine}
-        </Text>
-      ) : null}
-      {statusLabel ? <Text style={styles.statusLabel}>{statusLabel}</Text> : null}
-    </Pressable>
+    <Svg width={14} height={16} viewBox="0 0 14 16">
+      <Path
+        d="M7 0.6c.3 2.5-1.4 3.7-2.5 5C3.2 7 2.2 8.4 2.2 10.2 2.2 13 4.3 15.2 7 15.2s4.8-2.2 4.8-5c0-2-.9-3.4-1.8-4.6C9 4.3 7.8 3 7 .6z"
+        fill="#C2410C"
+      />
+    </Svg>
   );
+}
+
+function WeekDots({
+  goal,
+  entries,
+  asOf,
+}: {
+  goal: Goal;
+  entries: GoalEntry[];
+  asOf: string;
+}) {
+  const days = getWeekDays(asOf);
+  const start = goalStartDate(goal);
+  const logged = new Set(
+    entries
+      .filter((entry) => {
+        const date = entry.entryDate.slice(0, 10);
+        return entry.goalId === goal.id && date <= asOf && date >= start;
+      })
+      .map((entry) => entry.entryDate.slice(0, 10)),
+  );
+
+  return (
+    <View style={styles.weekDots} pointerEvents="none">
+      {days.map((day) => {
+        if (day.dateString < start) {
+          return <View key={day.dateString} style={styles.weekDotSlot} />;
+        }
+        const selected = day.dateString === asOf;
+        const after = day.dateString > asOf;
+        const hasEntry = logged.has(day.dateString);
+        return (
+          <View key={day.dateString} style={styles.weekDotSlot}>
+            {selected ? <View style={styles.weekDotRing} /> : null}
+            <View
+              style={[
+                styles.weekDot,
+                after
+                  ? styles.weekDotHollow
+                  : hasEntry
+                    ? styles.weekDotDone
+                    : styles.weekDotMissed,
+              ]}
+            />
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+function ThinBar({ percent }: { percent: number }) {
+  return (
+    <View style={styles.thinTrack}>
+      <View style={[styles.thinFill, { width: `${Math.max(0, Math.min(100, percent))}%` }]} />
+    </View>
+  );
+}
+
+function attentionWarn(detail: string): boolean {
+  return (
+    detail === 'overdue' ||
+    detail === "can't finish this week" ||
+    detail.startsWith('Missed')
+  );
+}
+
+function defaultReviewWeek(today: string): string {
+  const current = getWeekStart(today);
+  const weekday = parseDateString(today).getDay();
+  return weekday === 0 || weekday === 1 ? addDays(current, -7) : current;
+}
+
+function reviewWeekTitle(viewed: string, current: string): string {
+  if (viewed === current) {
+    return 'This week';
+  }
+  if (viewed === addDays(current, -7)) {
+    return 'Last week';
+  }
+  return `Week of ${formatShortDate(viewed)}`;
+}
+
+function missedThisWeek(
+  review: WeeklyReview,
+  nodes: Goal[],
+  entries: GoalEntry[],
+  asOf: string,
+  weekStart: string,
+): AtRiskItem[] {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const missed: AtRiskItem[] = [];
+  for (const item of review.items) {
+    if (item.isDone) {
+      continue;
+    }
+    const goal = byId.get(item.goalId);
+    if (goal == null) {
+      continue;
+    }
+    let detail = 'Missed';
+    if (isRepeating(goal)) {
+      const target = weeklyTarget(goal, weekStart);
+      if (target != null && target > 0) {
+        const total = periodTotalAsOf(goal, entries, asOf);
+        detail = `Missed: ${formatQty(total)} of ${formatQty(target)}`;
+      }
+    }
+    missed.push({
+      goalId: item.goalId,
+      title: item.title,
+      parentTitle: item.parentTitle,
+      detail,
+    });
+  }
+  return missed;
 }
 
 export default function DashboardScreen({ navigation }: Props) {
@@ -388,6 +590,7 @@ export default function DashboardScreen({ navigation }: Props) {
   const [activityEntries, setActivityEntries] = useState<GoalEntry[]>([]);
   const [completedOpen, setCompletedOpen] = useState(false);
   const [period, setPeriod] = useState<DashboardPeriod>('weekly');
+  const [viewedWeek, setViewedWeek] = useState(() => defaultReviewWeek(todayDateString()));
 
   const loadDashboard = useCallback(async () => {
     setLoadError(null);
@@ -413,6 +616,17 @@ export default function DashboardScreen({ navigation }: Props) {
       const weekEnd = addDays(weekStart, 6);
       const periodEnd = weekEnd > monthEnd(today) ? weekEnd : monthEnd(today);
       const from = addDays(today, -STREAK_LOOKBACK_DAYS);
+      let earliestDay = today;
+      for (const node of nextNodes) {
+        const start = goalStartDate(node);
+        if (start < earliestDay) {
+          earliestDay = start;
+        }
+      }
+      const historyStart = getWeekStart(earliestDay);
+      const reviewFromCandidate = addDays(weekStart, -52 * 7);
+      const reviewFrom =
+        historyStart < reviewFromCandidate ? historyStart : reviewFromCandidate;
       const reviewChildren = buildChildrenMap(nextNodes);
       const reviewIds = nextNodes
         .filter(
@@ -429,12 +643,12 @@ export default function DashboardScreen({ navigation }: Props) {
             ? getEntries(repeatingIds, from, periodEnd)
             : Promise.resolve([]),
           reviewIds.length > 0
-            ? getEntries(reviewIds, addDays(weekStart, -52 * 7), weekEnd)
+            ? getEntries(reviewIds, reviewFrom, weekEnd)
             : Promise.resolve([]),
           nextNodes.length > 0
             ? getEntries(
                 nextNodes.map((node) => node.id),
-                weekStart,
+                historyStart,
                 weekEnd,
               )
             : Promise.resolve([]),
@@ -469,11 +683,60 @@ export default function DashboardScreen({ navigation }: Props) {
   };
 
   const today = todayDateString();
-  const weekStart = getWeekStart(today);
+  const currentWeek = getWeekStart(today);
+  const earliestWeek = useMemo(() => {
+    if (nodes.length === 0) {
+      return currentWeek;
+    }
+    let earliest = today;
+    for (const node of nodes) {
+      const start = goalStartDate(node);
+      if (start < earliest) {
+        earliest = start;
+      }
+    }
+    const week = getWeekStart(earliest);
+    return week > currentWeek ? currentWeek : week;
+  }, [nodes, today, currentWeek]);
+  const weekStart =
+    viewedWeek < earliestWeek ? earliestWeek : viewedWeek > currentWeek ? currentWeek : viewedWeek;
+  const asOf = weekStart === currentWeek ? today : addDays(weekStart, 6);
+  const canGoPrevious = weekStart > earliestWeek;
+  const canGoNext = weekStart < currentWeek;
   const weekRange = `${formatShortDate(weekStart)} – ${formatShortDate(addDays(weekStart, 6))}`;
+
+  useEffect(() => {
+    if (loading) {
+      return;
+    }
+    setViewedWeek((current) => {
+      if (current < earliestWeek) {
+        return earliestWeek;
+      }
+      if (current > currentWeek) {
+        return currentWeek;
+      }
+      return current;
+    });
+  }, [loading, earliestWeek, currentWeek]);
+
+  const displayEntries = useMemo(
+    () => mergeEntries([entries, reviewEntries, activityEntries]),
+    [entries, reviewEntries, activityEntries],
+  );
+  const asOfEntries = useMemo(
+    () => entriesOnOrBefore(displayEntries, asOf),
+    [displayEntries, asOf],
+  );
   const review = useMemo(
-    () => getWeeklyItems(nodes, reviewEntries, parseDateString(weekStart)),
-    [nodes, reviewEntries, weekStart],
+    () =>
+      getWeeklyItems(
+        nodes,
+        reviewEntries,
+        parseDateString(weekStart),
+        parseDateString(asOf),
+      ),
+    [nodes, reviewEntries, weekStart, asOf],
   );
   const childrenMap = useMemo(() => buildChildrenMap(nodes), [nodes]);
   const activeGoals = useMemo(
@@ -493,33 +756,34 @@ export default function DashboardScreen({ navigation }: Props) {
   const onPaceCount = useMemo(
     () =>
       deadlineGoals.filter((goal) => {
-        const total = rollupTotal(goal, nodes, entries) ?? 0;
-        const pace = paceInfo(goal, total, today);
+        const total = rollupTotal(goal, nodes, asOfEntries) ?? 0;
+        const pace = paceInfo(goal, total, asOf);
         return pace != null && pace.pctDone >= pace.pctExpected;
       }).length,
-    [deadlineGoals, nodes, entries, today],
+    [deadlineGoals, nodes, asOfEntries, asOf],
   );
   const weekDelta = useMemo(() => {
-    const asOf = parseDateString(today);
-    const lastAsOf = parseDateString(addDays(today, -7));
-    const thisWeek = getWeeklyItems(nodes, reviewEntries, parseDateString(weekStart), asOf);
+    const viewedAsOf = parseDateString(asOf);
+    const priorAsOf = parseDateString(addDays(asOf, -7));
+    const thisWeek = getWeeklyItems(nodes, reviewEntries, parseDateString(weekStart), viewedAsOf);
     const lastWeek = getWeeklyItems(
       nodes,
       reviewEntries,
       parseDateString(addDays(weekStart, -7)),
-      lastAsOf,
+      priorAsOf,
     );
     return thisWeek.donePct - lastWeek.donePct;
-  }, [nodes, reviewEntries, weekStart, today]);
+  }, [nodes, reviewEntries, weekStart, asOf]);
   const weekStreak = useMemo(
-    () => getWeekStreak(nodes, reviewEntries, parseDateString(today)),
-    [nodes, reviewEntries, today],
+    () => getWeekStreak(nodes, reviewEntries, parseDateString(asOf)),
+    [nodes, reviewEntries, asOf],
   );
   const activeDates = useMemo(() => {
     const dates = new Set<string>();
+    const weekEnd = addDays(weekStart, 6);
     for (const entry of activityEntries) {
       const date = entry.entryDate.slice(0, 10);
-      if (date >= weekStart && date <= today) {
+      if (date >= weekStart && date <= asOf && date <= weekEnd) {
         dates.add(date);
       }
     }
@@ -528,15 +792,22 @@ export default function DashboardScreen({ navigation }: Props) {
         continue;
       }
       const completed = goal.actualEndDate.slice(0, 10);
-      if (completed >= weekStart && completed <= today) {
+      if (completed >= weekStart && completed <= asOf && completed <= weekEnd) {
         dates.add(completed);
       }
     }
     return dates;
-  }, [activityEntries, nodes, weekStart, today]);
+  }, [activityEntries, nodes, weekStart, asOf]);
   const atRiskItems = useMemo(
-    () => getAtRiskItems(nodes, reviewEntries, parseDateString(today)),
-    [nodes, reviewEntries, today],
+    () =>
+      weekStart === currentWeek
+        ? getAtRiskItems(nodes, reviewEntries, parseDateString(today))
+        : missedThisWeek(review, nodes, displayEntries, asOf, weekStart),
+    [weekStart, currentWeek, nodes, reviewEntries, today, review, displayEntries, asOf],
+  );
+  const weekWins = useMemo(
+    () => winsThisWeek(nodes, displayEntries, asOf, weekStart),
+    [nodes, displayEntries, asOf, weekStart],
   );
   const doneGoals = useMemo(
     () =>
@@ -547,7 +818,7 @@ export default function DashboardScreen({ navigation }: Props) {
   );
 
   const openGoal = (goalId: string) => {
-    navigation.navigate('StepDetail', { goalId });
+    navigation.navigate('Goal', { goalId });
   };
 
   if (loading && nodes.length === 0) {
@@ -618,8 +889,44 @@ export default function DashboardScreen({ navigation }: Props) {
         {period === 'weekly' ? (
           <>
             <View style={styles.weekHeader}>
-              <Text style={styles.weekTitle}>This week</Text>
-              <Text style={styles.weekRange}>{weekRange}</Text>
+              <Text style={styles.weekTitle}>{reviewWeekTitle(weekStart, currentWeek)}</Text>
+              <View style={styles.weekNavRow}>
+                <Pressable
+                  onPress={() => setViewedWeek(addDays(weekStart, -7))}
+                  disabled={!canGoPrevious}
+                  accessibilityRole="button"
+                  accessibilityLabel="Previous week"
+                  accessibilityState={{ disabled: !canGoPrevious }}
+                  style={({ pressed }) => [
+                    styles.weekNavButton,
+                    pressed && canGoPrevious && styles.pressed,
+                  ]}
+                >
+                  <Ionicons
+                    name="chevron-back"
+                    size={22}
+                    color={canGoPrevious ? '#1C1C1E' : '#C7C7CC'}
+                  />
+                </Pressable>
+                <Text style={styles.weekRange}>{weekRange}</Text>
+                <Pressable
+                  onPress={() => setViewedWeek(addDays(weekStart, 7))}
+                  disabled={!canGoNext}
+                  accessibilityRole="button"
+                  accessibilityLabel="Next week"
+                  accessibilityState={{ disabled: !canGoNext }}
+                  style={({ pressed }) => [
+                    styles.weekNavButton,
+                    pressed && canGoNext && styles.pressed,
+                  ]}
+                >
+                  <Ionicons
+                    name="chevron-forward"
+                    size={22}
+                    color={canGoNext ? '#1C1C1E' : '#C7C7CC'}
+                  />
+                </Pressable>
+              </View>
             </View>
             <View>
               {/* weekly metric cards go here */}
@@ -632,25 +939,112 @@ export default function DashboardScreen({ navigation }: Props) {
               weekStreak={weekStreak}
             />
             <DaysActiveCard weekStart={weekStart} today={today} activeDates={activeDates} />
-            <NeedsAttentionCard items={atRiskItems} onPress={openGoal} />
-            <Text style={styles.sectionTitle}>Goals</Text>
+            <View style={styles.weeklyCard}>
+              <Text style={styles.weeklyCardTitle}>Wins this week</Text>
+              {weekWins.length === 0 ? (
+                <Text style={styles.weeklyEmpty}>
+                  Wins will show up here as you check things off.
+                </Text>
+              ) : (
+                <>
+                  {weekWins.slice(0, WIN_LIMIT).map((win, index) => (
+                    <Pressable
+                      key={win.key}
+                      onPress={() => openGoal(win.goalId)}
+                      style={({ pressed }) => [
+                        styles.winRow,
+                        index > 0 && styles.attentionRowBorder,
+                        pressed && styles.pressed,
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Open ${win.title}`}
+                    >
+                      <View style={styles.attentionText}>
+                        {win.parentTitle ? (
+                          <Text style={styles.attentionParent}>{win.parentTitle}</Text>
+                        ) : null}
+                        <View style={styles.winTitleRow}>
+                          {win.kind === 'streak' ? (
+                            <FlameMark />
+                          ) : (
+                            <Ionicons name="checkmark" size={16} color="#248A3D" />
+                          )}
+                          <Text style={styles.winTitle} numberOfLines={1}>
+                            {win.title}
+                          </Text>
+                        </View>
+                        <Text style={styles.winDetail}>{win.detail}</Text>
+                      </View>
+                    </Pressable>
+                  ))}
+                  {weekWins.length > WIN_LIMIT ? (
+                    <Text style={styles.moreWins}>+{weekWins.length - WIN_LIMIT} more</Text>
+                  ) : null}
+                </>
+              )}
+            </View>
+            <NeedsAttentionCard items={atRiskItems} nodes={nodes} onPress={openGoal} />
             <View style={styles.sectionCard}>
+              <Text style={styles.cardHeader}>All goals</Text>
               {activeGoals.length > 0 ? (
-                activeGoals.map((goal, index) => (
-                  <View
-                    key={goal.id}
-                    style={index < activeGoals.length - 1 ? styles.rowBorder : undefined}
-                  >
-                    <ActiveGoalCard
-                      node={goal}
-                      nodes={nodes}
-                      entries={entries}
-                      today={today}
-                      childrenMap={childrenMap}
+                activeGoals.map((goal, index) => {
+                  const analysis =
+                    goalAnalysis(goal, nodes, displayEntries, asOf) ??
+                    bigDealSummary(goal, nodes, asOf);
+                  const children = childrenMap.get(goal.id) ?? [];
+                  const showDots = isRepeating(goal);
+                  const showBar = !showDots && (children.length > 0 || isTracked(goal));
+                  const barTarget = isRepeating(goal)
+                    ? weeklyTarget(goal, weekStart)
+                    : goal.targetAmount;
+                  const barTotal = children.length > 0
+                    ? null
+                    : isRepeating(goal)
+                      ? periodTotalAsOf(goal, displayEntries, asOf)
+                      : (rollupTotal(goal, nodes, asOfEntries) ?? 0);
+                  const deal = children.length > 0 ? bigDealSummary(goal, nodes, asOf) : null;
+                  const percent = deal
+                    ? deal.total > 0
+                      ? (deal.done / deal.total) * 100
+                      : 0
+                    : barPercent(barTotal ?? 0, barTarget);
+                  return (
+                    <Pressable
+                      key={goal.id}
                       onPress={() => openGoal(goal.id)}
-                    />
-                  </View>
-                ))
+                      style={({ pressed }) => [
+                        styles.allGoalRow,
+                        index > 0 && styles.attentionRowBorder,
+                        pressed && styles.pressed,
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Open ${goal.title}`}
+                    >
+                      <View style={styles.attentionText}>
+                        <Text style={styles.allGoalTitle} numberOfLines={2}>
+                          {goal.title || 'Untitled'}
+                        </Text>
+                        {analysis ? (
+                          <Text style={styles.analysisLine} numberOfLines={1}>
+                            <Text style={{ color: TONE_COLOR[analysis.tone] }}>
+                              {analysis.headline}
+                            </Text>
+                            {analysis.detail ? (
+                              <Text style={styles.analysisDetail}>{` ${analysis.detail}`}</Text>
+                            ) : null}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <View style={styles.allGoalTrailing}>
+                        {showDots ? (
+                          <WeekDots goal={goal} entries={asOfEntries} asOf={asOf} />
+                        ) : null}
+                        {showBar ? <ThinBar percent={percent} /> : null}
+                        <Ionicons name="chevron-forward" size={18} color="#c7c7cc" />
+                      </View>
+                    </Pressable>
+                  );
+                })
               ) : (
                 <Text style={styles.emptyText}>No active goals.</Text>
               )}
@@ -676,24 +1070,38 @@ export default function DashboardScreen({ navigation }: Props) {
               <View style={styles.sectionCard}>
                 {doneGoals.length > 0 ? (
                   doneGoals.map((goal, index) => (
-                    <View
+                    <Pressable
                       key={goal.id}
-                      style={[
+                      onPress={() => openGoal(goal.id)}
+                      style={({ pressed }) => [
                         styles.completedRow,
                         index < doneGoals.length - 1 && styles.rowBorder,
+                        pressed && styles.pressed,
                       ]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Open ${goal.title}`}
                     >
                       <Text style={[styles.goalTitle, styles.doneTitle]}>{goal.title}</Text>
                       <Text style={styles.completedDate}>
                         {goal.actualEndDate ? formatDateMDY(goal.actualEndDate) : '—'}
                       </Text>
-                    </View>
+                    </Pressable>
                   ))
                 ) : (
                   <Text style={styles.emptyText}>No completed goals.</Text>
                 )}
               </View>
             ) : null}
+            <Pressable
+              onPress={() =>
+                navigation.getParent<NavigationProp<RootTabParamList>>()?.navigate('Goals')
+              }
+              style={({ pressed }) => [styles.planButton, pressed && styles.pressed]}
+              accessibilityRole="button"
+              accessibilityLabel="Plan next week"
+            >
+              <Text style={styles.planButtonText}>Plan next week →</Text>
+            </Pressable>
           </>
         ) : (
           <View style={styles.placeholder}>
@@ -786,10 +1194,36 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#111',
   },
+  weekNavRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 2,
+  },
+  weekNavButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   weekRange: {
+    flex: 1,
     fontSize: 15,
     color: '#8e8e93',
-    marginTop: 2,
+    textAlign: 'center',
+  },
+  planButton: {
+    backgroundColor: '#007aff',
+    borderRadius: 12,
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  planButtonText: {
+    color: '#fff',
+    fontSize: 17,
+    fontWeight: '600',
   },
   placeholder: {
     paddingVertical: 48,
@@ -949,6 +1383,121 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: '#666',
     textAlign: 'right',
+  },
+  attentionWarn: {
+    color: '#C2410C',
+  },
+  whyLine: {
+    fontSize: 13,
+    fontStyle: 'italic',
+    color: '#8e8e93',
+    marginTop: 2,
+  },
+  winRow: {
+    paddingVertical: 8,
+  },
+  winTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  winTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#111',
+  },
+  winDetail: {
+    fontSize: 14,
+    color: '#6B6B70',
+    marginTop: 2,
+    marginLeft: 22,
+  },
+  moreWins: {
+    fontSize: 14,
+    color: '#8e8e93',
+    paddingTop: 8,
+  },
+  cardHeader: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#111',
+    paddingHorizontal: 14,
+    paddingTop: 16,
+    paddingBottom: 4,
+  },
+  allGoalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  allGoalTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#111',
+  },
+  analysisLine: {
+    fontSize: 13,
+    marginTop: 2,
+  },
+  analysisDetail: {
+    color: '#6B6B70',
+  },
+  allGoalTrailing: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+  },
+  thinTrack: {
+    width: 60,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#E5E5EA',
+    overflow: 'hidden',
+  },
+  thinFill: {
+    height: 4,
+    backgroundColor: '#248A3D',
+  },
+  weekDots: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  weekDotSlot: {
+    width: 8,
+    height: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  weekDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  weekDotDone: {
+    backgroundColor: '#248A3D',
+  },
+  weekDotMissed: {
+    backgroundColor: '#D1D1D6',
+  },
+  weekDotHollow: {
+    backgroundColor: 'transparent',
+    borderWidth: 1.5,
+    borderColor: '#D1D1D6',
+  },
+  weekDotRing: {
+    position: 'absolute',
+    top: -3.5,
+    right: -3.5,
+    bottom: -3.5,
+    left: -3.5,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: '#1C1C1E',
   },
   pressed: {
     opacity: 0.7,

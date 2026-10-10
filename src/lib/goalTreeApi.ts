@@ -16,6 +16,7 @@ type GoalRow = {
   parent_id: string | null;
   title: string;
   description: string | null;
+  why: string | null;
   category: string | null;
   sort_order: number | null;
   status: string;
@@ -35,6 +36,7 @@ export type GoalInput = {
   title: string;
   parentId?: string | null;
   description?: string | null;
+  why?: string | null;
   category?: string | null;
   status?: GoalStatus;
   targetStartDate?: string | null;
@@ -101,6 +103,7 @@ function mapRowToNode(row: GoalRow): Goal {
     parentId: row.parent_id,
     title: row.title,
     description: row.description,
+    why: blankToNull(row.why),
     category: row.category,
     sortOrder: row.sort_order ?? 0,
     status,
@@ -271,6 +274,7 @@ export async function createGoal(input: GoalInput): Promise<Goal> {
       parent_id: parentId,
       title: input.title,
       description: blankToNull(input.description),
+      why: blankToNull(input.why),
       category: blankToNull(input.category),
       sort_order: maxOrder + 1,
       status: input.status ?? (repeating ? 'active' : 'pending'),
@@ -310,6 +314,9 @@ export async function updateGoal(
   }
   if (updates.description !== undefined) {
     row.description = blankToNull(updates.description);
+  }
+  if (updates.why !== undefined) {
+    row.why = blankToNull(updates.why);
   }
   if (updates.category !== undefined) {
     row.category = blankToNull(updates.category);

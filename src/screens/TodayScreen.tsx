@@ -1806,7 +1806,7 @@ export default function TodayScreen() {
                         ) : undefined
                       }
                       onOpen={() =>
-                        navigation.navigate('StepDetail', { goalId: step.id })
+                        navigation.navigate('Goal', { goalId: step.id })
                       }
                       onControl={onControl}
                     />

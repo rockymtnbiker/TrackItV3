@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Children, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -18,7 +18,6 @@ import { EditableOrderedRow } from '../components/EditableOrderedRow';
 import { DatePickerModal } from '../components/DatePickerModal';
 import {
   FormDateRow,
-  FormDescriptionField,
   FormFieldRow,
   FormInlineInput,
   FormSelectRow,
@@ -121,6 +120,49 @@ function parseAmount(value: string): number | null {
 
 function periodWord(period: RepeatPeriod | null): string {
   return period === 'month' ? 'month' : 'week';
+}
+
+function TimelineRows({ children }: { children: ReactNode }) {
+  const rows = Children.toArray(children);
+  return (
+    <View>
+      {rows.map((row, index) => (
+        <View
+          key={index}
+          style={index < rows.length - 1 ? styles.hairlineRow : undefined}
+        >
+          {row}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function DetailCard({
+  title,
+  guide,
+  headerRight,
+  children,
+}: {
+  title?: string;
+  guide?: string;
+  headerRight?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <View style={styles.detailCard}>
+      {title ? (
+        <View style={styles.cardIntro}>
+          <View style={styles.cardHeaderRow}>
+            <Text style={styles.cardHeader}>{title}</Text>
+            {headerRight}
+          </View>
+          {guide ? <Text style={styles.cardGuide}>{guide}</Text> : null}
+        </View>
+      ) : null}
+      {children}
+    </View>
+  );
 }
 
 /** Same-unit daily totals the progress bar rolls up, including days before the start. */
@@ -466,6 +508,103 @@ function StatusCircle({
   );
 }
 
+export function GoalReadout({
+  node,
+  nodes,
+  entries,
+}: {
+  node: Goal;
+  nodes: Goal[];
+  entries: GoalEntry[];
+}) {
+  const displayUnit = node.unit;
+  const repeatOn = node.plannedDays !== null;
+  const today = todayDateString();
+  const total = displayUnit
+    ? repeatOn
+      ? periodTotal(node, entries, today)
+      : (rollupTotal(node, nodes, entries) ?? 0)
+    : null;
+  const pace =
+    displayUnit && !repeatOn ? paceInfo(node, total ?? 0, today) : null;
+
+  return (
+    <>
+      {displayUnit ? (
+        <View style={styles.progressCard}>
+          <Text style={styles.progress}>
+            {total ?? 0} / {node.targetAmount ?? '—'} {displayUnit}
+            {repeatOn ? ` this ${periodWord(node.repeatPeriod)}` : ''}
+          </Text>
+          <View style={styles.barTrack}>
+            <View
+              style={[
+                styles.barFill,
+                {
+                  width: `${Math.max(
+                    0,
+                    Math.min(
+                      100,
+                      node.targetAmount
+                        ? ((total ?? 0) / node.targetAmount) * 100
+                        : 0,
+                    ),
+                  )}%`,
+                },
+              ]}
+            />
+            {pace ? (
+              <View
+                style={[
+                  styles.paceTick,
+                  {
+                    left: `${Math.max(0, Math.min(100, pace.pctExpected))}%`,
+                  },
+                ]}
+              />
+            ) : null}
+          </View>
+          {pace && node.targetAmount != null && node.targetEndDate ? (
+            <ProgressLineChart
+              series={buildProgressSeries({
+                entries: rolledUpEntries(
+                  node,
+                  nodes,
+                  entries,
+                  node.targetEndDate,
+                  today,
+                ),
+                startDate: goalStartDate(node),
+                endDate: node.targetEndDate,
+                target: node.targetAmount,
+                today,
+              })}
+            />
+          ) : null}
+          {!repeatOn && pace ? (
+            <Text
+              style={[
+                styles.paceLine,
+                pace.delta < 0 && !pace.onPace
+                  ? styles.paceBehind
+                  : styles.paceAhead,
+              ]}
+            >
+              {pace.onPace
+                ? 'On pace'
+                : `${Math.round(pace.pctDone)}% done · ${Math.round(Math.abs(pace.delta))}% ${pace.delta < 0 ? 'behind' : 'ahead'}`}
+            </Text>
+          ) : null}
+          {!repeatOn && !node.targetEndDate ? (
+            <Text style={styles.hint}>Add a target end date to see your pace.</Text>
+          ) : null}
+        </View>
+      ) : null}
+      <MetricsSections node={node} nodes={nodes} entries={entries} />
+    </>
+  );
+}
+
 export default function StepDetailScreen({ navigation, route }: Props) {
   const { goalId } = route.params;
   const [node, setNode] = useState<Goal | null>(null);
@@ -478,6 +617,8 @@ export default function StepDetailScreen({ navigation, route }: Props) {
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [why, setWhy] = useState('');
+  const [whyOpen, setWhyOpen] = useState(false);
   const [trackOn, setTrackOn] = useState(false);
   const [unitChoice, setUnitChoice] = useState('');
   const [customUnit, setCustomUnit] = useState('');
@@ -514,6 +655,8 @@ export default function StepDetailScreen({ navigation, route }: Props) {
     const preset = next.unit != null && isPresetUnit(next.unit);
     setTitle(next.title);
     setDescription(next.description ?? '');
+    setWhy(next.why ?? '');
+    setWhyOpen(false);
     setTrackOn(next.unit != null);
     setUnitChoice(next.unit == null ? '' : preset ? next.unit : CUSTOM_UNIT);
     setCustomUnit(next.unit != null && !preset ? next.unit : '');
@@ -560,6 +703,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
   const draftRef = useRef({
     title,
     description,
+    why,
     trackOn,
     unitChoice,
     customUnit,
@@ -575,6 +719,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
   draftRef.current = {
     title,
     description,
+    why,
     trackOn,
     unitChoice,
     customUnit,
@@ -620,6 +765,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
     const payload = {
       title: trimmedTitle,
       description: draft.description.trim() || null,
+      why: node.parentId == null ? draft.why.trim() || null : undefined,
       unit,
       targetAmount: amount,
       repeatPeriod: draft.repeatOn ? draft.repeatPeriod : null,
@@ -646,6 +792,7 @@ export default function StepDetailScreen({ navigation, route }: Props) {
             ...current,
             title: updated.title,
             description: updated.description,
+            why: updated.why,
             unit: updated.unit,
             targetAmount: updated.targetAmount,
             repeatPeriod: updated.repeatPeriod,
@@ -682,9 +829,20 @@ export default function StepDetailScreen({ navigation, route }: Props) {
 
   useLayoutEffect(() => {
     navigation.setOptions({
-      title: title.trim() || node?.title || 'Step',
+      title: 'Edit goal',
+      headerTitleAlign: 'center',
+      headerRight: () => (
+        <Pressable
+          onPress={() => navigation.goBack()}
+          accessibilityRole="button"
+          accessibilityLabel="Done"
+          hitSlop={8}
+        >
+          <Text style={styles.headerDone}>Done</Text>
+        </Pressable>
+      ),
     });
-  }, [navigation, node?.title, title]);
+  }, [navigation]);
 
   const parent =
     node?.parentId != null
@@ -726,11 +884,16 @@ export default function StepDetailScreen({ navigation, route }: Props) {
     targetAmount: parseAmount(target),
   });
   const periodChoice = repeatPeriod === 'month' ? 'month' : showingDaily ? 'daily' : 'week';
-  const targetLabel = !repeatOn
-    ? 'Total target'
-    : trackOn
-      ? `Target per ${periodWord(repeatPeriod)}`
-      : `Times per ${periodWord(repeatPeriod)}`;
+  const amountField = (label: string) => (
+    <FormFieldRow label={label} labelWidth={150}>
+      <FormInlineInput
+        value={target}
+        onChangeText={setTarget}
+        placeholder="Optional"
+        keyboardType="numeric"
+      />
+    </FormFieldRow>
+  );
 
   const applySavedStatus = (updated: Goal, scope: 'self' | 'child') => {
     if (scope === 'self') {
@@ -1016,19 +1179,50 @@ export default function StepDetailScreen({ navigation, route }: Props) {
           {node.parentId == null ? 'Goal' : 'Step'}
         </Text>
 
-        <View style={styles.sectionCard}>
-          <View style={styles.fields}>
-            <FormFieldRow label="Title">
-              <FormInlineInput
-                value={title}
-                onChangeText={setTitle}
-                placeholder="Enter title"
-              />
-            </FormFieldRow>
-            <FormDescriptionField
-              value={description}
-              onChangeText={setDescription}
+        <View style={styles.detailCards}>
+        <View style={styles.detailCard}>
+          <FormFieldRow label="Title">
+            <FormInlineInput
+              value={title}
+              onChangeText={setTitle}
+              placeholder="Enter title"
             />
+          </FormFieldRow>
+          {node.parentId == null ? (
+            <View style={styles.whyBlock}>
+              <Text style={styles.whyLabel}>Why it matters</Text>
+              {whyOpen || why.length > 0 ? (
+                <TextInput
+                  autoFocus={whyOpen}
+                  value={why}
+                  onChangeText={setWhy}
+                  placeholder="What will this change for you?"
+                  multiline
+                  numberOfLines={4}
+                  textAlignVertical="top"
+                  onBlur={() => {
+                    if (!why.trim()) {
+                      setWhyOpen(false);
+                    }
+                  }}
+                  style={formFieldStyles.formMultilineInput}
+                />
+              ) : (
+                <Pressable
+                  onPress={() => setWhyOpen(true)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Add your why"
+                  style={styles.whyAddHit}
+                >
+                  <Text style={styles.whyAdd}>+ Add your why</Text>
+                </Pressable>
+              )}
+            </View>
+          ) : null}
+        </View>
+
+        <DetailCard title="Timeline" guide="When does this happen?">
+          <TimelineRows>
             <FormFieldRow label="Status">
               <View style={styles.statusRow}>
                 <StatusCircle status={node.status} onPress={cycleStatus} />
@@ -1079,279 +1273,142 @@ export default function StepDetailScreen({ navigation, route }: Props) {
               value={targetEndDate}
               onChange={setTargetEndDate}
             />
+          </TimelineRows>
+        </DetailCard>
 
-            <View style={styles.switchRow}>
-              <Text style={styles.switchLabel}>Track an amount</Text>
-              <Switch
-                value={trackOn}
-                onValueChange={(on) => {
-                  setTrackOn(on);
-                  if (!on && !repeatOn) {
-                    setTarget('');
-                  }
-                }}
+        <DetailCard
+          title="Track an amount"
+          guide="Want to measure progress? Count minutes, miles, pages and more toward a target."
+          headerRight={
+            <Switch
+              value={trackOn}
+              onValueChange={(on) => {
+                setTrackOn(on);
+                if (!on && !repeatOn) {
+                  setTarget('');
+                }
+              }}
+            />
+          }
+        >
+          {trackOn ? (
+            <View style={styles.fields}>
+              <FormSelectRow
+                label="Unit"
+                value={unitChoice}
+                placeholder="Choose"
+                options={UNIT_CHOICES}
+                onChange={setUnitChoice}
               />
+              {unitChoice === CUSTOM_UNIT ? (
+                <FormFieldRow label="Custom unit">
+                  <FormInlineInput
+                    value={customUnit}
+                    onChangeText={setCustomUnit}
+                    placeholder="e.g. laps"
+                  />
+                </FormFieldRow>
+              ) : null}
+              {amountField(
+                repeatOn ? `Target per ${periodWord(repeatPeriod)}` : 'Total target',
+              )}
             </View>
-            {trackOn ? (
-              <>
-                <FormSelectRow
-                  label="Unit"
-                  value={unitChoice}
-                  placeholder="Choose"
-                  options={UNIT_CHOICES}
-                  onChange={setUnitChoice}
-                />
-                {unitChoice === CUSTOM_UNIT ? (
-                  <FormFieldRow label="Custom unit">
-                    <FormInlineInput
-                      value={customUnit}
-                      onChangeText={setCustomUnit}
-                      placeholder="e.g. laps"
-                    />
-                  </FormFieldRow>
-                ) : null}
-              </>
-            ) : null}
-            {trackOn || repeatOn ? (
-              <FormFieldRow label={targetLabel} labelWidth={150}>
-                <FormInlineInput
-                  value={target}
-                  onChangeText={setTarget}
-                  placeholder="Optional"
-                  keyboardType="numeric"
-                />
-              </FormFieldRow>
-            ) : null}
+          ) : null}
+        </DetailCard>
 
-            <View style={styles.switchRow}>
-              <Text style={styles.switchLabel}>Repeat</Text>
-              <Switch
-                value={repeatOn}
-                disabled={hasChildren}
-                onValueChange={(on) => {
-                  if (hasChildren) {
+        <DetailCard
+          title="Repeat"
+          guide="Is this something you do regularly? Like 3 times a week, or every day."
+          headerRight={
+            <Switch
+              value={repeatOn}
+              disabled={hasChildren}
+              onValueChange={(on) => {
+                if (hasChildren) {
+                  return;
+                }
+                setRepeatOn(on);
+                if (on) {
+                  setRepeatPeriod((current) => current ?? 'week');
+                  setPlannedDays((current) => current ?? []);
+                } else if (!trackOn) {
+                  setTarget('');
+                }
+              }}
+            />
+          }
+        >
+          {hasChildren ? (
+            <Text style={styles.hint}>Steps with sub-steps can't repeat.</Text>
+          ) : null}
+          {repeatOn ? (
+            <View style={styles.fields}>
+              <FormSelectRow
+                label="Period"
+                value={periodChoice}
+                placeholder="Weekly"
+                options={PERIOD_CHOICES}
+                onChange={(value) => {
+                  if (value === 'month') {
+                    setRepeatPeriod('month');
                     return;
                   }
-                  setRepeatOn(on);
-                  if (on) {
-                    setRepeatPeriod((current) => current ?? 'week');
-                    setPlannedDays((current) => current ?? []);
-                  } else if (!trackOn) {
-                    setTarget('');
+                  setRepeatPeriod('week');
+                  if (value === 'daily') {
+                    setPlannedDays(ALL_PLANNED_DAYS);
+                    if (!trackOn) {
+                      setTarget('');
+                    }
                   }
                 }}
               />
-            </View>
-            {hasChildren ? (
-              <Text style={styles.hint}>Steps with sub-steps can't repeat.</Text>
-            ) : null}
-            {repeatOn ? (
-              <>
-                <FormSelectRow
-                  label="Period"
-                  value={periodChoice}
-                  placeholder="Weekly"
-                  options={PERIOD_CHOICES}
-                  onChange={(value) => {
-                    if (value === 'month') {
-                      setRepeatPeriod('month');
-                      return;
-                    }
-                    setRepeatPeriod('week');
-                    if (value === 'daily') {
-                      setPlannedDays(ALL_PLANNED_DAYS);
-                      if (!trackOn) {
-                        setTarget('');
-                      }
-                    }
-                  }}
-                />
-                <View style={styles.formStackedBlock}>
-                  <Text style={formFieldStyles.formFieldLabel}>Days</Text>
-                  <View style={formFieldStyles.dayPicker}>
-                    {DAY_LABELS.map((label, day) => {
-                      const selected = plannedDays.includes(day);
-                      return (
-                        <Pressable
-                          key={DAY_NAMES[day]}
-                          onPress={() => togglePlannedDay(day)}
-                          style={({ pressed }) => [
-                            formFieldStyles.dayChip,
-                            selected && formFieldStyles.dayChipSelected,
-                            pressed && styles.pressed,
+              <View style={styles.formStackedBlock}>
+                <Text style={formFieldStyles.formFieldLabel}>Days</Text>
+                <View style={formFieldStyles.dayPicker}>
+                  {DAY_LABELS.map((label, day) => {
+                    const selected = plannedDays.includes(day);
+                    return (
+                      <Pressable
+                        key={DAY_NAMES[day]}
+                        onPress={() => togglePlannedDay(day)}
+                        style={({ pressed }) => [
+                          formFieldStyles.dayChip,
+                          selected && formFieldStyles.dayChipSelected,
+                          pressed && styles.pressed,
+                        ]}
+                        accessibilityLabel={DAY_NAMES[day]}
+                        accessibilityState={{ selected }}
+                      >
+                        <Text
+                          style={[
+                            formFieldStyles.dayChipText,
+                            selected && formFieldStyles.dayChipTextSelected,
                           ]}
-                          accessibilityLabel={DAY_NAMES[day]}
-                          accessibilityState={{ selected }}
                         >
-                          <Text
-                            style={[
-                              formFieldStyles.dayChipText,
-                              selected && formFieldStyles.dayChipTextSelected,
-                            ]}
-                          >
-                            {label}
-                          </Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
+                          {label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
                 </View>
-              </>
-            ) : null}
-          </View>
-        </View>
-
-        {displayUnit ? (
-          <View style={styles.progressCard}>
-            <Text style={styles.progress}>
-              {total ?? 0} / {progressNode.targetAmount ?? '—'} {displayUnit}
-              {repeatOn ? ` this ${periodWord(repeatPeriod)}` : ''}
-            </Text>
-            <View style={styles.barTrack}>
-              <View
-                style={[
-                  styles.barFill,
-                  {
-                    width: `${Math.max(
-                      0,
-                      Math.min(
-                        100,
-                        progressNode.targetAmount
-                          ? ((total ?? 0) / progressNode.targetAmount) * 100
-                          : 0,
-                      ),
-                    )}%`,
-                  },
-                ]}
-              />
-              {pace ? (
-                <View
-                  style={[
-                    styles.paceTick,
-                    {
-                      left: `${Math.max(0, Math.min(100, pace.pctExpected))}%`,
-                    },
-                  ]}
-                />
-              ) : null}
-            </View>
-            {pace &&
-            progressNode.targetAmount != null &&
-            progressNode.targetEndDate ? (
-              <ProgressLineChart
-                series={buildProgressSeries({
-                  entries: rolledUpEntries(
-                    progressNode,
-                    allNodes,
-                    entries,
-                    progressNode.targetEndDate,
-                    today,
-                  ),
-                  startDate: goalStartDate(progressNode),
-                  endDate: progressNode.targetEndDate,
-                  target: progressNode.targetAmount,
-                  today,
-                })}
-              />
-            ) : null}
-            {!repeatOn && pace ? (
-              <Text
-                style={[
-                  styles.paceLine,
-                  pace.delta < 0 && !pace.onPace
-                    ? styles.paceBehind
-                    : styles.paceAhead,
-                ]}
-              >
-                {pace.onPace
-                  ? 'On pace'
-                  : `${Math.round(pace.pctDone)}% done · ${Math.round(Math.abs(pace.delta))}% ${pace.delta < 0 ? 'behind' : 'ahead'}`}
-              </Text>
-            ) : null}
-            {!repeatOn && !progressNode.targetEndDate ? (
-              <Text style={styles.hint}>
-                Add a target end date to see your pace.
-              </Text>
-            ) : null}
-          </View>
-        ) : hasChildren ? (
-          <Text style={styles.progress}>
-            {doneCount} done · {activeCount} active
-          </Text>
-        ) : null}
-
-        <MetricsSections
-          node={progressNode}
-          nodes={allNodes}
-          entries={entries}
-        />
-
-        {!repeatOn ? (
-          <>
-            <Text style={styles.sectionPrompt}>Steps</Text>
-            <View style={styles.sectionCard}>
-              {children.length === 0 ? (
-                <Text style={styles.emptyText}>No steps yet.</Text>
-              ) : (
-                children.map((child, index) => (
-                  <EditableOrderedRow
-                    key={child.id}
-                    title={child.title}
-                    status={child.status}
-                    onStatusPress={() => cycleChildStatus(child)}
-                    index={index}
-                    isDragging={draggingId === child.id}
-                    dragOffsetY={0}
-                    titlePlaceholder="Step title"
-                    openAccessibilityLabel="Open step"
-                    deleteAccessibilityLabel="Delete step"
-                    swipeToDelete
-                    repeating={child.plannedDays != null}
-                    onTitleChange={() => {}}
-                    onRowPress={() => openChild(child.id)}
-                    onOpen={() => openChild(child.id)}
-                    onDelete={() => confirmDelete(child.id)}
-                    onDragStart={() => setDraggingId(child.id)}
-                    onDragMove={() => {}}
-                    onDragEnd={(from, to) => {
-                      const clampedTo = Math.max(
-                        0,
-                        Math.min(childrenRef.current.length - 1, to),
-                      );
-                      reorderChildren(from, clampedTo);
-                      setDraggingId(null);
-                    }}
-                  />
-                ))
-              )}
-
-              <View style={styles.addRow}>
-                <TextInput
-                  style={styles.addInput}
-                  value={newStepTitle}
-                  onChangeText={setNewStepTitle}
-                  placeholder="+ Add a step"
-                  returnKeyType="done"
-                  onSubmitEditing={addStep}
-                />
-                <Pressable
-                  onPress={addStep}
-                  disabled={adding || !newStepTitle.trim()}
-                  style={({ pressed }) => [
-                    styles.addButton,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  {adding ? (
-                    <ActivityIndicator color="#007aff" />
-                  ) : (
-                    <Ionicons name="add" size={22} color="#007aff" />
-                  )}
-                </Pressable>
               </View>
+              {!trackOn ? amountField(`Times per ${periodWord(repeatPeriod)}`) : null}
             </View>
-          </>
-        ) : null}
+          ) : null}
+        </DetailCard>
+
+        <DetailCard title="Notes">
+          <TextInput
+            value={description}
+            onChangeText={setDescription}
+            placeholder="Optional"
+            multiline
+            numberOfLines={4}
+            textAlignVertical="top"
+            style={formFieldStyles.formMultilineInput}
+          />
+        </DetailCard>
+        </View>
 
         <Pressable
           onPress={() =>
@@ -1459,6 +1516,52 @@ const styles = StyleSheet.create({
     padding: 10,
     gap: 4,
     overflow: 'visible',
+  },
+  detailCards: {
+    gap: 12,
+  },
+  detailCard: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 16,
+    gap: 12,
+  },
+  cardIntro: {
+    gap: 4,
+  },
+  cardHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  cardHeader: {
+    flexShrink: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    color: '#6B6B70',
+  },
+  cardGuide: {
+    fontSize: 14,
+    color: '#6B6B70',
+  },
+  whyBlock: {
+    gap: 6,
+  },
+  whyLabel: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#111',
+  },
+  whyAddHit: {
+    minHeight: 44,
+    justifyContent: 'center',
+  },
+  whyAdd: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#007aff',
   },
   fields: {
     gap: 6,
@@ -1588,15 +1691,26 @@ const styles = StyleSheet.create({
   },
   deleteButton: {
     marginTop: 12,
+    backgroundColor: '#fff',
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 12,
+    paddingVertical: 16,
     minHeight: 44,
   },
   deleteButtonText: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '600',
     color: '#c62828',
+  },
+  headerDone: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#007aff',
+  },
+  hairlineRow: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E5E5EA',
   },
   metricsCard: {
     backgroundColor: '#fff',

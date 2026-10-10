@@ -139,7 +139,7 @@ export default function GoalsListScreen({ navigation }: Props) {
         parentId: null,
       });
       setCreateVisible(false);
-      navigation.push('StepDetail', { goalId: created.id });
+      navigation.push('Goal', { goalId: created.id });
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Failed to create goal.';
@@ -224,7 +224,7 @@ export default function GoalsListScreen({ navigation }: Props) {
                 index={index}
                 itemHeight={LIST_CARD_HEIGHT}
                 onPress={() =>
-                  navigation.navigate('StepDetail', { goalId: node.id })
+                  navigation.navigate('Goal', { goalId: node.id })
                 }
                 onDragStart={() => {}}
                 onDragMove={() => {}}
